@@ -2,8 +2,8 @@
 # Meeting Minutes Generator - Python Dependencies
 # =============================================================================
 # Target: Hugging Face Spaces (CPU tier)
-# Python: 3.10+
-# Last Updated: March 2024
+# Python: 3.13 compatible
+# Last Updated: March 2026
 # =============================================================================
 
 # Web Interface Framework
@@ -12,16 +12,16 @@ gradio==5.0.0
 # Hugging Face Transformers & Models
 transformers==4.40.0
 
-# Deep Learning Framework
-torch==2.2.0
-torchaudio==2.2.0
+# Deep Learning Framework (Python 3.13 compatible versions)
+torch==2.5.1
+torchaudio==2.5.1
 
 # Tokenization & Model Dependencies
 sentencepiece==0.2.0
-protobuf==4.25.0
+protobuf>=4.25.0
 
 # Accelerate model loading (recommended)
-accelerate==0.30.0
+accelerate>=0.30.0
 
 # =============================================================================
 # Notes:
