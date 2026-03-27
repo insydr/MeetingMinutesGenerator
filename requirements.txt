@@ -7,17 +7,17 @@
 # =============================================================================
 
 # Web Interface Framework
-gradio==5.0.0
+gradio>=5.0.0
 
 # Hugging Face Transformers & Models
-transformers==4.40.0
+transformers>=4.40.0
 
-# Deep Learning Framework (Python 3.13 compatible versions)
-torch==2.5.1
-torchaudio==2.5.1
+# Deep Learning Framework (Python 3.13 compatible - latest versions)
+torch>=2.6.0
+torchaudio>=2.6.0
 
 # Tokenization & Model Dependencies
-sentencepiece==0.2.0
+sentencepiece>=0.2.0
 protobuf>=4.25.0
 
 # Accelerate model loading (recommended)
@@ -29,5 +29,4 @@ accelerate>=0.30.0
 # - whisper-small: ~244M parameters
 # - bart-large-cnn: ~406M parameters  
 # - flan-t5-small: ~60M parameters
-# - Pinned versions ensure reproducible deployments
 # =============================================================================
