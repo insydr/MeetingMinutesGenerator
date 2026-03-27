@@ -6,8 +6,11 @@
 # Last Updated: March 2026
 # =============================================================================
 
+# Python 3.13 audio support (provides audioop module)
+audioop-lts>=0.2.0
+
 # Web Interface Framework (latest for Python 3.13 support)
-gradio>=5.23.0
+gradio>=5.30.0
 
 # Hugging Face Transformers & Models
 transformers>=4.40.0
@@ -23,13 +26,11 @@ protobuf>=4.25.0
 # Accelerate model loading (recommended)
 accelerate>=0.30.0
 
-# Python 3.13 audio support
-pyaudioop>=0.1.0
-
 # =============================================================================
 # Notes:
 # - Models are downloaded on first run (~2-3GB total)
 # - whisper-small: ~244M parameters
 # - bart-large-cnn: ~406M parameters  
 # - flan-t5-small: ~60M parameters
+# - audioop-lts provides the removed audioop module for Python 3.13+
 # =============================================================================
