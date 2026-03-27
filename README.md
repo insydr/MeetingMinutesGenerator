@@ -1,9 +1,36 @@
 # Meeting Minutes Generator
 
+---
+title: Meeting Minutes Generator
+emoji: 🎙️
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+sdk_version: 5.0.0
+app_file: app.py
+pinned: false
+license: mit
+short_description: AI-powered meeting transcription and minutes generation
+tags:
+  - audio
+  - transcription
+  - summarization
+  - whisper
+  - bart
+  - flan-t5
+  - meeting-minutes
+  - action-items
+models:
+  - openai/whisper-small
+  - facebook/bart-large-cnn
+  - google/flan-t5-small
+---
+
 [![Gradio](https://img.shields.io/badge/Gradio-5.0+-orange.svg)](https://gradio.app/)
 [![Hugging Face Spaces](https://img.shields.io/badge/🤗%20Hugging%20Face-Spaces-yellow.svg)](https://huggingface.co/spaces)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Deploy](https://img.shields.io/badge/Deploy-on%20Hugging%20Face-blue?logo=huggingface)](https://huggingface.co/new-space?template=insydr/MeetingMinutesGenerator)
 
 > **AI-powered meeting documentation that saves you hours of manual work**
 

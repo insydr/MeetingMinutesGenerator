@@ -1,0 +1,78 @@
+{
+  "app_name": "Meeting Minutes Generator",
+  "version": "1.0.0",
+  "sdk": "gradio",
+  "sdk_version": "5.0.0",
+  "python_version": "3.10",
+  "hardware": "cpu",
+  "hardware_note": "Optimized for Hugging Face Spaces free CPU tier (2 vCPU, 16GB RAM)",
+  
+  "models": {
+    "transcriber": {
+      "model_id": "openai/whisper-small",
+      "parameters": 244000000,
+      "dtype": "float32",
+      "device": "cpu",
+      "description": "OpenAI Whisper-small for English speech recognition"
+    },
+    "summarizer": {
+      "model_id": "facebook/bart-large-cnn",
+      "parameters": 406000000,
+      "dtype": "float32",
+      "device": "cpu",
+      "description": "BART-large-cnn for meeting summarization"
+    },
+    "extractor": {
+      "model_id": "google/flan-t5-small",
+      "parameters": 60000000,
+      "dtype": "float32",
+      "device": "cpu",
+      "description": "Flan-T5-small for action item extraction"
+    }
+  },
+  
+  "processing_limits": {
+    "max_audio_duration_seconds": 300,
+    "max_audio_duration_hard_limit": 600,
+    "max_audio_file_size_mb": 25,
+    "max_transcript_chars": 10000,
+    "min_transcript_words": 50,
+    "processing_timeout_seconds": 120
+  },
+  
+  "performance_settings": {
+    "batch_size": 1,
+    "gradient_computation": false,
+    "torch_dtype": "float32",
+    "concurrency_count": 2,
+    "max_threads": 4
+  },
+  
+  "audio_formats": {
+    "accepted": [".wav", ".mp3", ".m4a", ".webm"],
+    "mime_types": ["audio/wav", "audio/mpeg", "audio/mp4", "audio/webm", "audio/x-m4a"]
+  },
+  
+  "output_settings": {
+    "summary_max_tokens": 150,
+    "summary_min_tokens": 40,
+    "max_action_items": 10
+  },
+  
+  "environment_variables": {
+    "MEETING_MINUTES_MOCK_MODE": {
+      "default": "false",
+      "description": "Enable mock mode for testing without loading models"
+    },
+    "MEETING_MINUTES_DEBUG": {
+      "default": "false", 
+      "description": "Enable debug logging"
+    }
+  },
+  
+  "monitoring": {
+    "health_check_enabled": true,
+    "usage_stats_enabled": true,
+    "timing_logs_enabled": true
+  }
+}

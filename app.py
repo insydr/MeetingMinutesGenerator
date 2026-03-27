@@ -10,7 +10,7 @@ This application uses:
 - Facebook BART-large-cnn for text summarization
 - Google Flan-T5-small for action item extraction
 
-Deployed on Hugging Face Spaces (CPU tier).
+Optimized for Hugging Face Spaces (Free CPU tier) per PRD Section 6 (NFR-1, NFR-2).
 
 Based on PRD Section 7: Technical Architecture
 """
@@ -20,10 +20,16 @@ import sys
 import signal
 import tempfile
 import logging
+import time
+import threading
+import gc
 from datetime import datetime
 from typing import Optional, Tuple, List, Dict, Any, Union, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from contextlib import contextmanager
+from collections import defaultdict
+import json
 
 import gradio as gr
 import torch
@@ -71,7 +77,11 @@ CHUNK_OVERLAP_CHARS = 200  # Overlap between chunks for context
 
 # Device configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-TORCH_DTYPE = torch.float32  # Use float32 for CPU compatibility
+TORCH_DTYPE = torch.float32  # Use float32 for CPU compatibility (avoid float16 CPU issues)
+
+# CPU-optimized settings for Hugging Face Spaces free tier
+BATCH_SIZE = 1  # Process one item at a time for memory efficiency
+ENABLE_GRADIENT_COMPUTATION = False  # Disable gradients for inference only
 
 
 # =============================================================================
@@ -393,13 +403,57 @@ def get_processing_stage_message(stage: ProcessingStage) -> str:
 
 
 # =============================================================================
-# Global Model Containers
+# Usage Analytics (In-Memory Only) - NFR-2
+# =============================================================================
+
+@dataclass
+class UsageStats:
+    """In-memory usage statistics for monitoring."""
+    total_requests: int = 0
+    successful_requests: int = 0
+    failed_requests: int = 0
+    audio_requests: int = 0
+    text_requests: int = 0
+    total_processing_time: float = 0.0
+    stage_times: Dict[str, float] = field(default_factory=lambda: defaultdict(float))
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        return {
+            "total_requests": self.total_requests,
+            "successful_requests": self.successful_requests,
+            "failed_requests": self.failed_requests,
+            "audio_requests": self.audio_requests,
+            "text_requests": self.text_requests,
+            "avg_processing_time": (
+                self.total_processing_time / self.successful_requests 
+                if self.successful_requests > 0 else 0
+            ),
+            "stage_avg_times": {
+                k: v / self.successful_requests if self.successful_requests > 0 else 0
+                for k, v in self.stage_times.items()
+            },
+        }
+
+
+# Global usage statistics (thread-safe)
+usage_stats = UsageStats()
+stats_lock = threading.Lock()
+
+
+# =============================================================================
+# Global Model Containers - Optimized for CPU Inference
 # =============================================================================
 
 class ModelContainer:
     """
     Container for globally loaded models.
     Models are loaded once at startup and reused for all requests.
+    
+    Optimizations for Hugging Face Spaces CPU tier:
+    - Uses float32 for CPU compatibility (avoids float16 errors)
+    - Sets models to eval() mode after loading
+    - Models cached globally to avoid reloading per request
     """
     
     def __init__(self, mock_mode: bool = False):
@@ -408,6 +462,7 @@ class ModelContainer:
         self._summarizer = None
         self._extractor = None
         self._load_results: List[ModelLoadResult] = []
+        self._model_info: Dict[str, Dict[str, Any]] = {}
         
     @property
     def transcriber(self):
@@ -480,20 +535,44 @@ class ModelContainer:
         return all_success
     
     def _load_transcriber(self) -> ModelLoadResult:
-        """Load the Whisper ASR model."""
+        """Load the Whisper ASR model with CPU optimizations."""
         try:
             logger.info(f"Loading Whisper model: {WHISPER_MODEL_ID}")
             
-            from transformers import pipeline
+            from transformers import pipeline, AutoModelForSpeechSeq2Seq, AutoProcessor
             
+            # Load model with float32 for CPU compatibility
+            model = AutoModelForSpeechSeq2Seq.from_pretrained(
+                WHISPER_MODEL_ID,
+                torch_dtype=TORCH_DTYPE,
+                low_cpu_mem_usage=True,
+            )
+            
+            # Set to eval mode for inference (no dropout, no gradient computation)
+            model.eval()
+            
+            # Load processor
+            processor = AutoProcessor.from_pretrained(WHISPER_MODEL_ID)
+            
+            # Create pipeline with optimized settings
             self._transcriber = pipeline(
                 "automatic-speech-recognition",
-                model=WHISPER_MODEL_ID,
+                model=model,
+                tokenizer=processor.tokenizer,
+                feature_extractor=processor.feature_extractor,
                 torch_dtype=TORCH_DTYPE,
                 device=-1,  # CPU only
             )
             
-            logger.info("Whisper model loaded successfully")
+            # Store model info
+            self._model_info["transcriber"] = {
+                "model_id": WHISPER_MODEL_ID,
+                "dtype": str(TORCH_DTYPE),
+                "device": "cpu",
+                "parameters": sum(p.numel() for p in model.parameters()),
+            }
+            
+            logger.info(f"Whisper model loaded successfully (params: {self._model_info['transcriber']['parameters']:,})")
             return ModelLoadResult(True, WHISPER_MODEL_ID)
             
         except Exception as e:
@@ -501,20 +580,43 @@ class ModelContainer:
             return ModelLoadResult(False, WHISPER_MODEL_ID, str(e))
     
     def _load_summarizer(self) -> ModelLoadResult:
-        """Load the BART summarization model."""
+        """Load the BART summarization model with CPU optimizations."""
         try:
             logger.info(f"Loading BART model: {BART_MODEL_ID}")
             
-            from transformers import pipeline
+            from transformers import pipeline, AutoModelForSeq2SeqLM, AutoTokenizer
             
+            # Load model with float32 for CPU compatibility
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                BART_MODEL_ID,
+                torch_dtype=TORCH_DTYPE,
+                low_cpu_mem_usage=True,
+            )
+            
+            # Set to eval mode for inference
+            model.eval()
+            
+            # Load tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(BART_MODEL_ID)
+            
+            # Create pipeline with optimized settings
             self._summarizer = pipeline(
                 "summarization",
-                model=BART_MODEL_ID,
+                model=model,
+                tokenizer=tokenizer,
                 torch_dtype=TORCH_DTYPE,
                 device=-1,  # CPU only
             )
             
-            logger.info("BART model loaded successfully")
+            # Store model info
+            self._model_info["summarizer"] = {
+                "model_id": BART_MODEL_ID,
+                "dtype": str(TORCH_DTYPE),
+                "device": "cpu",
+                "parameters": sum(p.numel() for p in model.parameters()),
+            }
+            
+            logger.info(f"BART model loaded successfully (params: {self._model_info['summarizer']['parameters']:,})")
             return ModelLoadResult(True, BART_MODEL_ID)
             
         except Exception as e:
@@ -522,20 +624,43 @@ class ModelContainer:
             return ModelLoadResult(False, BART_MODEL_ID, str(e))
     
     def _load_extractor(self) -> ModelLoadResult:
-        """Load the Flan-T5 model for action item extraction."""
+        """Load the Flan-T5 model for action item extraction with CPU optimizations."""
         try:
             logger.info(f"Loading Flan-T5 model: {FLAN_T5_MODEL_ID}")
             
-            from transformers import pipeline
+            from transformers import pipeline, AutoModelForSeq2SeqLM, AutoTokenizer
             
+            # Load model with float32 for CPU compatibility
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                FLAN_T5_MODEL_ID,
+                torch_dtype=TORCH_DTYPE,
+                low_cpu_mem_usage=True,
+            )
+            
+            # Set to eval mode for inference
+            model.eval()
+            
+            # Load tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(FLAN_T5_MODEL_ID)
+            
+            # Create pipeline with optimized settings
             self._extractor = pipeline(
                 "text2text-generation",
-                model=FLAN_T5_MODEL_ID,
+                model=model,
+                tokenizer=tokenizer,
                 torch_dtype=TORCH_DTYPE,
                 device=-1,  # CPU only
             )
             
-            logger.info("Flan-T5 model loaded successfully")
+            # Store model info
+            self._model_info["extractor"] = {
+                "model_id": FLAN_T5_MODEL_ID,
+                "dtype": str(TORCH_DTYPE),
+                "device": "cpu",
+                "parameters": sum(p.numel() for p in model.parameters()),
+            }
+            
+            logger.info(f"Flan-T5 model loaded successfully (params: {self._model_info['extractor']['parameters']:,})")
             return ModelLoadResult(True, FLAN_T5_MODEL_ID)
             
         except Exception as e:
@@ -545,6 +670,85 @@ class ModelContainer:
 
 # Initialize global model container
 models = ModelContainer(mock_mode=MOCK_MODE)
+
+
+# =============================================================================
+# Memory Management & Performance Utilities - NFR-1
+# =============================================================================
+
+def cleanup_memory() -> None:
+    """
+    Clean up memory after processing.
+    Important for Hugging Face Spaces free tier with limited RAM.
+    """
+    # Force garbage collection
+    gc.collect()
+    
+    # Clear CUDA cache if GPU is available (future-proofing)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    
+    logger.debug("Memory cleanup performed")
+
+
+@contextmanager
+def torch_inference_mode():
+    """
+    Context manager for inference-only mode.
+    Disables gradient computation for memory efficiency.
+    """
+    with torch.no_grad():
+        yield
+
+
+def log_stage_time(stage_name: str, start_time: float) -> float:
+    """
+    Log processing time for a stage and return elapsed time.
+    
+    Args:
+        stage_name: Name of the processing stage
+        start_time: Start time from time.time()
+        
+    Returns:
+        Elapsed time in seconds
+    """
+    elapsed = time.time() - start_time
+    logger.info(f"⏱️ {stage_name}: {elapsed:.2f}s")
+    
+    # Update stats
+    with stats_lock:
+        usage_stats.stage_times[stage_name] += elapsed
+    
+    return elapsed
+
+
+def update_usage_stats(
+    success: bool,
+    processing_time: float,
+    input_type: str = "text"
+) -> None:
+    """
+    Update usage statistics (thread-safe).
+    
+    Args:
+        success: Whether the request was successful
+        processing_time: Total processing time in seconds
+        input_type: 'audio' or 'text'
+    """
+    with stats_lock:
+        usage_stats.total_requests += 1
+        usage_stats.total_processing_time += processing_time
+        
+        if success:
+            usage_stats.successful_requests += 1
+        else:
+            usage_stats.failed_requests += 1
+        
+        if input_type == "audio":
+            usage_stats.audio_requests += 1
+        else:
+            usage_stats.text_requests += 1
 
 
 # =============================================================================
@@ -627,6 +831,8 @@ def transcribe_audio(
     """
     Transcribe audio file to text using Whisper-small.
     
+    Optimized for CPU inference with torch.no_grad() context.
+    
     Args:
         audio_path: Path to the audio file (WAV, MP3, M4A, WebM) or bytes
         progress_callback: Optional callback for progress updates
@@ -638,6 +844,8 @@ def transcribe_audio(
         ValueError: If audio_path is None or empty
         RuntimeError: If transcription fails
     """
+    t0 = time.time()
+    
     if audio_path is None or audio_path == "":
         raise ValueError("No audio file provided")
     
@@ -658,18 +866,27 @@ def transcribe_audio(
         if progress_callback:
             progress_callback(0.3, "Running Whisper transcription...")
         
-        # Transcribe with Whisper
-        result = models.transcriber(
-            audio_path,
-            return_timestamps=False,
-            generate_kwargs={
-                "language": "english",
-                "task": "transcribe",
-            }
-        )
+        # Transcribe with Whisper - using torch.no_grad() for memory efficiency
+        with torch_inference_mode():
+            result = models.transcriber(
+                audio_path,
+                return_timestamps=False,
+                batch_size=BATCH_SIZE,
+                generate_kwargs={
+                    "language": "english",
+                    "task": "transcribe",
+                }
+            )
         
         transcript = result["text"].strip()
-        logger.info(f"Transcription complete. Length: {len(transcript)} characters")
+        
+        # Log timing for monitoring
+        t1 = time.time()
+        logger.info(f"⏱️ Transcription: {t1-t0:.2f}s ({len(transcript)} chars)")
+        
+        # Update stats
+        with stats_lock:
+            usage_stats.stage_times["transcription"] += (t1 - t0)
         
         if progress_callback:
             progress_callback(1.0, "Transcription complete")
@@ -736,6 +953,8 @@ def generate_summary(
     Generate an executive summary using BART-large-cnn.
     Handles long transcripts by chunking and combining summaries.
     
+    Optimized for CPU inference with torch.no_grad() context.
+    
     Args:
         text: Full meeting transcript text
         progress_callback: Optional callback for progress updates
@@ -743,6 +962,8 @@ def generate_summary(
     Returns:
         Summary text (40-150 tokens)
     """
+    t0 = time.time()
+    
     if not text or len(text.strip()) == 0:
         return "No transcript available to summarize."
     
@@ -774,14 +995,16 @@ def generate_summary(
             progress_callback(progress, f"Summarizing chunk {i+1}/{len(chunks)}...")
         
         try:
-            # Generate summary for each chunk
-            summary_result = models.summarizer(
-                chunk,
-                max_length=SUMMARY_MAX_LENGTH,
-                min_length=SUMMARY_MIN_LENGTH,
-                do_sample=False,
-                truncation=True,
-            )
+            # Generate summary for each chunk - using torch.no_grad() for memory efficiency
+            with torch_inference_mode():
+                summary_result = models.summarizer(
+                    chunk,
+                    max_length=SUMMARY_MAX_LENGTH,
+                    min_length=SUMMARY_MIN_LENGTH,
+                    do_sample=False,
+                    truncation=True,
+                    batch_size=BATCH_SIZE,
+                )
             
             chunk_summary = summary_result[0]["summary_text"].strip()
             summaries.append(chunk_summary)
@@ -804,13 +1027,15 @@ def generate_summary(
                 progress_callback(0.9, "Combining summaries...")
             
             try:
-                final_result = models.summarizer(
-                    combined,
-                    max_length=SUMMARY_MAX_LENGTH,
-                    min_length=SUMMARY_MIN_LENGTH,
-                    do_sample=False,
-                    truncation=True,
-                )
+                with torch_inference_mode():
+                    final_result = models.summarizer(
+                        combined,
+                        max_length=SUMMARY_MAX_LENGTH,
+                        min_length=SUMMARY_MIN_LENGTH,
+                        do_sample=False,
+                        truncation=True,
+                        batch_size=BATCH_SIZE,
+                    )
                 final_summary = final_result[0]["summary_text"].strip()
             except Exception as e:
                 logger.warning(f"Failed to combine summaries: {str(e)}")
@@ -818,10 +1043,17 @@ def generate_summary(
         else:
             final_summary = combined
     
+    # Log timing for monitoring
+    t1 = time.time()
+    logger.info(f"⏱️ Summarization: {t1-t0:.2f}s ({len(final_summary)} chars)")
+    
+    # Update stats
+    with stats_lock:
+        usage_stats.stage_times["summarization"] += (t1 - t0)
+    
     if progress_callback:
         progress_callback(1.0, "Summarization complete")
     
-    logger.info(f"Final summary: {len(final_summary)} chars")
     return final_summary
 
 
@@ -832,6 +1064,8 @@ def extract_action_items(
     """
     Extract action items from transcript using Flan-T5-small with prompt engineering.
     
+    Optimized for CPU inference with torch.no_grad() context.
+    
     Args:
         text: Full meeting transcript text
         progress_callback: Optional callback for progress updates
@@ -839,6 +1073,8 @@ def extract_action_items(
     Returns:
         List of dicts with 'task', 'owner', 'deadline' keys
     """
+    t0 = time.time()
+    
     if not text or len(text.strip()) == 0:
         return []
     
@@ -874,14 +1110,16 @@ Transcript:
 Action items:"""
 
     try:
-        # Generate extraction
-        result = models.extractor(
-            extraction_prompt,
-            max_length=256,
-            num_beams=2,
-            temperature=0.3,
-            do_sample=True,
-        )
+        # Generate extraction - using torch.no_grad() for memory efficiency
+        with torch_inference_mode():
+            result = models.extractor(
+                extraction_prompt,
+                max_length=256,
+                num_beams=2,
+                temperature=0.3,
+                do_sample=True,
+                batch_size=BATCH_SIZE,
+            )
         
         extraction_output = result[0]["generated_text"].strip()
         logger.info(f"Extraction output: {extraction_output}")
@@ -891,6 +1129,14 @@ Action items:"""
         
         # Parse the output
         action_items = parse_action_items_output(extraction_output, text)
+        
+        # Log timing for monitoring
+        t1 = time.time()
+        logger.info(f"⏱️ Action extraction: {t1-t0:.2f}s ({len(action_items)} items)")
+        
+        # Update stats
+        with stats_lock:
+            usage_stats.stage_times["extraction"] += (t1 - t0)
         
         if progress_callback:
             progress_callback(1.0, "Extraction complete")
@@ -2782,13 +3028,47 @@ def initialize_app():
     return success
 
 
+# =============================================================================
+# Health Check API Endpoint - NFR-2 Monitoring
+# =============================================================================
+
+def get_health_status() -> Dict[str, Any]:
+    """
+    Get health status for monitoring.
+    Used by Hugging Face Spaces health checks.
+    
+    Returns:
+        Dict with health status information
+    """
+    return {
+        "status": "healthy" if models.is_loaded else "degraded",
+        "timestamp": datetime.now().isoformat(),
+        "version": "1.0.0",
+        "models": {
+            "transcriber": models.transcriber is not None or models.mock_mode,
+            "summarizer": models.summarizer is not None or models.mock_mode,
+            "extractor": models.extractor is not None or models.mock_mode,
+        },
+        "mock_mode": models.mock_mode,
+        "device": DEVICE,
+        "usage_stats": usage_stats.to_dict(),
+    }
+
+
 if __name__ == "__main__":
     # Initialize and launch
     initialize_app()
     
     logger.info("Launching Gradio interface...")
+    
+    # Gradio concurrency settings for Hugging Face Spaces
+    # Limits concurrent requests for CPU tier optimization
     demo.launch(
         share=False,
         show_error=True,
         quiet=False,
+        max_threads=4,  # Limit concurrent threads for CPU
+        concurrency_count=2,  # Allow 2 concurrent requests max
+        server_name="0.0.0.0",
+        server_port=7860,
     )
