@@ -1768,6 +1768,9 @@ Action items agreed:
 - DNS configuration must be complete by Friday before launch"""
 
 # Example data structure for gr.Examples component
+# Audio sample paths (relative to app.py location)
+SAMPLES_DIR = os.path.join(os.path.dirname(__file__), "samples") if __file__ else "samples"
+
 EXAMPLE_MEETINGS = [
     # (audio_path, transcript_text, meeting_type)
     ("", EXAMPLE_TRANSCRIPT_STANDUP, "Standup", "Quick daily team standup with 3 action items"),
@@ -1775,6 +1778,41 @@ EXAMPLE_MEETINGS = [
     ("", EXAMPLE_TRANSCRIPT_BRAINSTORM, "Brainstorm", "Feature prioritization with voting results"),
     ("", EXAMPLE_TRANSCRIPT_RETROSPECTIVE, "Retrospective", "Sprint review with 5 improvement actions"),
     ("", EXAMPLE_TRANSCRIPT_QUICK_SYNC, "Other", "Cross-team coordination with clear deadlines"),
+]
+
+# Real audio examples with corresponding transcripts
+AUDIO_EXAMPLES = [
+    # (audio_path, transcript_text, meeting_type, description)
+    (
+        os.path.join(SAMPLES_DIR, "standup_sample.wav"),
+        "Team standup for March 27th. Alex here. I'll complete the UI mockups by Friday. Jordan here. I agreed to update the project timeline document by next Monday. Sarah here. I will schedule the client demo for next week. Key decisions: Push release date to end of Q3, prioritize mobile responsiveness. Next meeting scheduled for Friday at 2 PM.",
+        "Standup",
+        "🎙️ Audio: Team standup with 3 action items (~40 sec)"
+    ),
+    (
+        os.path.join(SAMPLES_DIR, "client_call_sample.wav"),
+        "Client call with Acme Corporation regarding the enterprise software project. John from client team requested additional customization for the reporting module. Lisa asked about API integration timeline, and Mike confirmed it's on track for next sprint. Action items: Mike to prepare API documentation by Friday. Sarah to send status reports every Monday. Schedule next call for Thursday at 3 PM.",
+        "Client Call",
+        "🎙️ Audio: Client meeting with 3 action items (~45 sec)"
+    ),
+    (
+        os.path.join(SAMPLES_DIR, "brainstorm_sample.wav"),
+        "Brainstorming session for Q4 product features. Participants from Engineering, Design, Marketing, and Sales. Ideas discussed: AI powered recommendations engine with 8 votes for priority. Mobile app redesign with dark mode, 6 votes. Slack and Teams integration, 5 votes. Decisions: Engineering to create technical specs by next week. Design team to mock up mobile dark mode by Friday. Next session scheduled for same time next month.",
+        "Brainstorm",
+        "🎙️ Audio: Brainstorming session (~55 sec)"
+    ),
+    (
+        os.path.join(SAMPLES_DIR, "retrospective_sample.wav"),
+        "Sprint 14 Retrospective for March 2024. What went well: Completed 18 story points, CI CD pipeline improvements reduced deployment time by 40 percent. What didn't go well: User Profile story was blocked for 3 days, two critical bugs required hotfixes. Action items: Alex to set up design review checkpoint by Monday. Jordan to create automated test suite by end of sprint. Sarah to update API documentation by Friday.",
+        "Retrospective",
+        "🎙️ Audio: Sprint retrospective (~50 sec)"
+    ),
+    (
+        os.path.join(SAMPLES_DIR, "quick_sync_sample.wav"),
+        "Quick sync between Marketing and Engineering. Rachel from Marketing, Tom from Engineering. Campaign launch is next Tuesday. Tom needs final copy and images by Thursday EOD. Rachel will send copy by tomorrow, images by Thursday. Tom will implement tracking pixels and coordinate with Jordan on DNS configuration by Monday. DNS must be complete by Friday before launch.",
+        "Other",
+        "🎙️ Audio: Cross-team coordination (~50 sec)"
+    ),
 ]
 
 
@@ -2487,7 +2525,27 @@ with gr.Blocks(
             
             # Enhanced examples with descriptions
             with gr.Tabs():
-                with gr.TabItem("📋 All Examples"):
+                with gr.TabItem("🎙️ Audio Examples"):
+                    gr.Markdown(
+                        """
+                        **🎤 Real Audio Recordings** - Click any example to test audio transcription:
+                        
+                        These are pre-recorded meeting samples that demonstrate the audio transcription pipeline.
+                        Each sample is 40-55 seconds long and showcases different meeting types.
+                        """
+                    )
+                    gr.Examples(
+                        examples=[
+                            [audio_path, transcript, meeting_type]
+                            for audio_path, transcript, meeting_type, description in AUDIO_EXAMPLES
+                        ],
+                        inputs=[audio_input, transcript_input, meeting_type],
+                        label="🎙️ Select an audio example:",
+                        elem_classes=["examples-section"],
+                        examples_per_page=5,
+                    )
+                
+                with gr.TabItem("📝 Text Examples"):
                     gr.Examples(
                         examples=[
                             ["", EXAMPLE_TRANSCRIPT_STANDUP, "Standup"],
@@ -2507,13 +2565,16 @@ with gr.Blocks(
                         """
                         **Available Example Types:**
                         
-                        | Type | Description | Action Items |
-                        |------|-------------|--------------|
-                        | 🏃 **Standup** | Quick team sync with progress updates | 3 items |
-                        | 📞 **Client Call** | External meeting with deliverables | 4 items |
-                        | 💡 **Brainstorm** | Creative session with voting | 3 decisions |
-                        | 🔄 **Retrospective** | Sprint review with improvements | 5 items |
-                        | 🤝 **Other** | Cross-team coordination | 3 items |
+                        | Type | Audio | Text | Description |
+                        |------|-------|------|-------------|
+                        | 🏃 **Standup** | ✅ 40 sec | ✅ | Quick team sync with progress updates |
+                        | 📞 **Client Call** | ✅ 45 sec | ✅ | External meeting with deliverables |
+                        | 💡 **Brainstorm** | ✅ 55 sec | ✅ | Creative session with voting |
+                        | 🔄 **Retrospective** | ✅ 50 sec | ✅ | Sprint review with improvements |
+                        | 🤝 **Quick Sync** | ✅ 50 sec | ✅ | Cross-team coordination |
+                        
+                        🎙️ **Audio examples** demonstrate the transcription pipeline with real recordings.
+                        📝 **Text examples** allow instant processing without audio upload.
                         """
                     )
                     

@@ -181,12 +181,15 @@ $RECYCLE.BIN/
 *.m4a
 *.ogg
 *.flac
+# Exception: sample audio files for Example Gallery
+!samples/*.wav
+!samples/*.mp3
 
 # Generated outputs
 output/
 outputs/
 results/
-samples/
+# Note: samples/ directory is NOT ignored - contains demo audio for Example Gallery
 
 # Large datasets
 data/
