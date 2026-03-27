@@ -915,7 +915,7 @@ def process_meeting(
 
 
 # =============================================================================
-# Gradio Interface
+# Gradio Interface - Based on PRD Section 8: UI/UX Specifications
 # =============================================================================
 
 # Example transcripts for quick testing
@@ -945,148 +945,649 @@ Action items:
 
 Meeting concluded at 3:45pm with positive outlook on project progression."""
 
+EXAMPLE_TRANSCRIPT_BRAINSTORM = """Brainstorming session: New product features for Q4
+
+Participants: Team leads from Engineering, Design, Marketing, and Sales
+
+Ideas discussed:
+1. AI-powered recommendations engine - could increase user engagement by 40%
+2. Mobile app redesign with dark mode support - high user demand
+3. Integration with Slack and Microsoft Teams - enterprise clients requesting
+4. Real-time collaboration features - competitors already have this
+5. Voice command interface - innovative but high development cost
+
+Voting results:
+- AI recommendations: 8 votes (priority for Q4)
+- Mobile redesign: 6 votes (start in Q4, complete in Q1)
+- Slack/Teams integration: 5 votes (evaluate technical requirements)
+- Real-time collaboration: 4 votes (backlog for now)
+- Voice interface: 2 votes (research phase only)
+
+Decisions:
+- Engineering will create technical specs for AI recommendations by next week
+- Design team to mock up mobile dark mode by Friday
+- Product team to research integration APIs
+
+Next brainstorming session scheduled for same time next month."""
+
+
+# =============================================================================
+# Custom CSS Styles - PRD Color Scheme
+# =============================================================================
+
+CUSTOM_CSS = """
+/* Container and Layout */
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+}
+
+/* Header Styling */
+.header-section {
+    text-align: center;
+    padding: 1.5rem 0;
+    border-bottom: 1px solid #e5e7eb;
+    margin-bottom: 1.5rem;
+}
+
+.header-title {
+    font-size: 2.25rem;
+    font-weight: 700;
+    color: #1f2937;
+    margin-bottom: 0.5rem;
+}
+
+.header-subtitle {
+    font-size: 1.1rem;
+    color: #6b7280;
+    font-style: italic;
+}
+
+/* Privacy Notice Banner - PRD NFR-4 */
+.privacy-notice {
+    background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%);
+    border-left: 4px solid #f59e0b;
+    padding: 1rem 1.25rem;
+    margin: 1rem 0;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.privacy-notice-title {
+    font-weight: 600;
+    color: #92400e;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.privacy-notice-content {
+    color: #78350f;
+    font-size: 0.95rem;
+    line-height: 1.6;
+}
+
+/* Section Headers */
+.section-header {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: #374151;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #3b82f6;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* Input Section Styling */
+.input-section {
+    background-color: #f9fafb;
+    padding: 1.25rem;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+}
+
+/* Output Section Styling */
+.output-section {
+    background-color: #ffffff;
+    padding: 1.25rem;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+}
+
+/* Audio Component Styling */
+.audio-component {
+    border: 2px dashed #d1d5db;
+    border-radius: 8px;
+    padding: 0.5rem;
+    transition: border-color 0.2s ease;
+}
+
+.audio-component:hover {
+    border-color: #3b82f6;
+}
+
+/* Duration Warning */
+.duration-warning {
+    background-color: #fef2f2;
+    border: 1px solid #fecaca;
+    color: #991b1b;
+    padding: 0.75rem;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    margin-top: 0.5rem;
+}
+
+/* Button Styling */
+.generate-button {
+    width: 100%;
+    margin-top: 1rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    padding: 0.75rem 1.5rem;
+    transition: all 0.2s ease;
+}
+
+.generate-button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+}
+
+/* Output Components */
+.summary-output {
+    background-color: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 8px;
+    padding: 1rem;
+    min-height: 80px;
+}
+
+.action-items-table {
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.minutes-output {
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    font-size: 0.875rem;
+    background-color: #1f2937;
+    color: #e5e7eb;
+    border-radius: 8px;
+}
+
+/* Tips Section */
+.tips-section {
+    background-color: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 8px;
+    padding: 1rem;
+    margin-top: 1rem;
+}
+
+.tips-title {
+    font-weight: 600;
+    color: #1e40af;
+    margin-bottom: 0.5rem;
+}
+
+.tips-list {
+    color: #1e3a8a;
+    font-size: 0.875rem;
+    padding-left: 1.25rem;
+    margin: 0;
+}
+
+.tips-list li {
+    margin-bottom: 0.25rem;
+}
+
+/* Examples Section */
+.examples-section {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background-color: #f9fafb;
+    border-radius: 12px;
+    border: 1px solid #e5e7eb;
+}
+
+/* Status Badges */
+.status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.375rem 0.75rem;
+    border-radius: 9999px;
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+
+.mock-badge {
+    background-color: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fcd34d;
+}
+
+.ready-badge {
+    background-color: #d1fae5;
+    color: #065f46;
+    border: 1px solid #6ee7b7;
+}
+
+.error-badge {
+    background-color: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fca5a5;
+}
+
+/* Loading State */
+.loading-indicator {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 1rem;
+    color: #3b82f6;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .header-title {
+        font-size: 1.75rem;
+    }
+    
+    .header-subtitle {
+        font-size: 1rem;
+    }
+    
+    .input-section,
+    .output-section {
+        padding: 1rem;
+    }
+}
+
+/* Accessibility - Focus States */
+.gradio-container *:focus {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+}
+
+/* Screen Reader Only Content */
+.sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+}
+"""
+
+
+# =============================================================================
+# Helper Functions for UI
+# =============================================================================
+
+def check_audio_duration(audio_path: Optional[str]) -> str:
+    """
+    Check audio file duration and return warning if > 5 minutes.
+    
+    Args:
+        audio_path: Path to uploaded audio file
+        
+    Returns:
+        Warning message if duration exceeds limit, empty string otherwise
+    """
+    if not audio_path:
+        return ""
+    
+    try:
+        import torchaudio
+        
+        # Get audio duration
+        waveform, sample_rate = torchaudio.load(audio_path)
+        duration_seconds = waveform.shape[1] / sample_rate
+        
+        if duration_seconds > MAX_AUDIO_DURATION_SECONDS:
+            minutes = int(duration_seconds // 60)
+            seconds = int(duration_seconds % 60)
+            return f"⚠️ **Warning:** Audio duration ({minutes}:{seconds:02d}) exceeds recommended 5-minute limit. Processing may timeout or be truncated."
+        
+        minutes = int(duration_seconds // 60)
+        seconds = int(duration_seconds % 60)
+        return f"✅ Audio duration: {minutes}:{seconds:02d}"
+        
+    except Exception as e:
+        logger.warning(f"Could not check audio duration: {str(e)}")
+        return ""
+
+
+def get_status_indicator() -> str:
+    """Get status indicator based on model loading state."""
+    if MOCK_MODE:
+        return "🧪 Mock Mode Active"
+    elif models.is_loaded:
+        return "✅ Models Loaded"
+    else:
+        return "⏳ Loading Models..."
+
+
+# =============================================================================
+# Build Gradio Interface
+# =============================================================================
+
 with gr.Blocks(
-    theme=gr.themes.Soft(),
-    title="Meeting Minutes Generator",
-    css="""
-    .header-text { text-align: center; margin-bottom: 1rem; }
-    .privacy-notice { 
-        background-color: #fff3cd; 
-        border-left: 4px solid #ffc107; 
-        padding: 0.75rem; 
-        margin-top: 1rem;
-        border-radius: 4px;
-    }
-    .status-badge {
-        display: inline-block;
-        padding: 0.25rem 0.5rem;
-        border-radius: 4px;
-        font-size: 0.85rem;
-        margin-left: 0.5rem;
-    }
-    .mock-badge { background-color: #ffc107; color: #333; }
-    """,
+    theme=gr.themes.Soft(
+        primary_hue="blue",
+        secondary_hue="slate",
+        neutral_hue="slate",
+        font=[
+            gr.themes.GoogleFont("Inter"),
+            "ui-sans-serif",
+            "system-ui",
+            "sans-serif",
+        ],
+    ),
+    title="🎙️ Meeting Minutes Generator",
+    css=CUSTOM_CSS,
+    fill_height=True,
 ) as demo:
     
-    # Header
-    gr.Markdown(
-        """
-        # Meeting Minutes Generator
-        
-        *Upload a recording or paste a transcript to generate structured, actionable meeting minutes*
-        """,
-        elem_classes=["header-text"],
-    )
-    
-    # Show mock mode indicator
-    if MOCK_MODE:
-        gr.Markdown(
-            """<span class="status-badge mock-badge">🧪 Mock Mode Active</span>""",
-        )
-    
-    # Main content area
+    # =========================================================================
+    # Header Section
+    # =========================================================================
     with gr.Row():
-        # Input Column
+        with gr.Column():
+            gr.HTML(
+                """
+                <div class="header-section">
+                    <h1 class="header-title">🎙️ Meeting Minutes Generator</h1>
+                    <p class="header-subtitle">
+                        Upload a recording or paste a transcript → Get structured, actionable meeting minutes
+                    </p>
+                </div>
+                """
+            )
+    
+    # =========================================================================
+    # Privacy Notice Banner (PRD NFR-4)
+    # =========================================================================
+    with gr.Row():
+        with gr.Column():
+            gr.HTML(
+                """
+                <div class="privacy-notice" role="alert" aria-label="Privacy Notice">
+                    <div class="privacy-notice-title">
+                        🔒 Privacy Notice
+                    </div>
+                    <div class="privacy-notice-content">
+                        Audio is processed in-memory and <strong>not stored</strong>. 
+                        Do not upload confidential or sensitive meetings. 
+                        For enterprise use, consider self-hosting.
+                    </div>
+                </div>
+                """
+            )
+    
+    # =========================================================================
+    # Status Indicator
+    # =========================================================================
+    with gr.Row(visible=MOCK_MODE or True):
+        with gr.Column(scale=4):
+            pass  # Spacer
         with gr.Column(scale=1):
-            gr.Markdown("### Input")
+            status_indicator = gr.Markdown(
+                value=get_status_indicator(),
+                elem_classes=["status-badge", "mock-badge" if MOCK_MODE else "ready-badge"],
+                show_label=False,
+            )
+    
+    # =========================================================================
+    # Main Content - Two Column Layout
+    # =========================================================================
+    with gr.Row(equal_height=True):
+        
+        # =====================================================================
+        # LEFT COLUMN - Input Section
+        # =====================================================================
+        with gr.Column(scale=1, min_width=350):
             
+            # Input Section Header
+            gr.HTML(
+                """
+                <div class="section-header">
+                    <span>📝</span> Input
+                </div>
+                """,
+                elem_classes=["input-section"],
+            )
+            
+            # Audio Input Component
             audio_input = gr.Audio(
-                label="Upload Recording",
+                label="🎤 Upload Recording",
                 sources=["upload", "microphone"],
                 type="filepath",
                 show_label=True,
+                interactive=True,
+                elem_classes=["audio-component"],
+                show_download_button=False,
             )
             
+            # Duration Status Display
+            duration_status = gr.Markdown(
+                value="",
+                elem_classes=["duration-warning"],
+                visible=False,
+                show_label=False,
+            )
+            
+            # Accepted formats hint
+            gr.HTML(
+                """
+                <p style="font-size: 0.8rem; color: #6b7280; margin-top: 0.25rem;">
+                    Accepted formats: WAV, MP3, M4A, WebM (max 5 min recommended)
+                </p>
+                """
+            )
+            
+            # Divider
+            gr.HTML("<hr style='border-color: #e5e7eb; margin: 1rem 0;'>")
+            
+            # Text Input Alternative
             transcript_input = gr.Textbox(
-                label="Or Paste Transcript",
+                label="📝 Or Paste Transcript",
                 lines=8,
-                placeholder="Paste your meeting transcript here...",
+                max_lines=50,
+                placeholder="Paste meeting transcript here...\n\nExample:\nTeam discussed Q3 goals. Alex will update the docs by Friday. Sarah agreed to schedule the client demo for next week.",
                 show_label=True,
+                interactive=True,
+                show_copy_button=True,
+                elem_classes=["transcript-input"],
             )
             
+            # Meeting Type Selector
             meeting_type = gr.Dropdown(
-                label="Meeting Type",
+                label="📋 Meeting Type",
                 choices=[
                     "Standup",
-                    "Client Call", 
+                    "Client Call",
                     "Brainstorm",
                     "Retrospective",
                     "Other",
                 ],
                 value="Standup",
                 show_label=True,
+                interactive=True,
+                elem_classes=["meeting-type-selector"],
+                info="Select the type of meeting for appropriate formatting",
             )
             
+            # Generate Button
             generate_btn = gr.Button(
-                "Generate Minutes",
+                "✨ Generate Minutes",
                 variant="primary",
                 size="lg",
+                elem_classes=["generate-button"],
+                interactive=True,
             )
             
-            # Tips
-            gr.Markdown(
-                """
-                **Tips for best results:**
-                - Ensure clear audio with minimal background noise
-                - Speak clearly and at a moderate pace
-                - For long meetings, consider processing in segments
-                - Processing may take 30-60 seconds on free tier
-                """
-            )
+            # Tips Section
+            with gr.Accordion("💡 Tips for Best Results", open=False):
+                gr.HTML(
+                    """
+                    <ul class="tips-list">
+                        <li>Ensure clear audio with minimal background noise</li>
+                        <li>Speak clearly and at a moderate pace</li>
+                        <li>For long meetings, consider processing in segments</li>
+                        <li>Mention names, deadlines, and commitments explicitly</li>
+                        <li>Processing may take 30-60 seconds on free tier</li>
+                    </ul>
+                    """
+                )
         
-        # Output Column
-        with gr.Column(scale=2):
-            gr.Markdown("### Output")
+        # =====================================================================
+        # RIGHT COLUMN - Output Section
+        # =====================================================================
+        with gr.Column(scale=2, min_width=500):
             
-            summary_output = gr.Markdown(
-                label="Executive Summary",
-                show_label=True,
+            # Output Section Header
+            gr.HTML(
+                """
+                <div class="section-header">
+                    <span>📊</span> Output
+                </div>
+                """
             )
             
+            # Executive Summary Output
+            summary_output = gr.Markdown(
+                label="📋 Executive Summary",
+                value="*Summary will appear here after processing...*",
+                show_label=True,
+                elem_classes=["summary-output"],
+                elem_id="summary-output",
+                visible=True,
+            )
+            
+            # Action Items Table
             actions_output = gr.Dataframe(
-                label="Action Items",
+                label="✅ Action Items",
                 headers=["Task", "Owner", "Deadline"],
                 datatype=["str", "str", "str"],
                 row_count=(1, "dynamic"),
                 col_count=(3, "fixed"),
                 show_label=True,
+                interactive=False,
+                elem_classes=["action-items-table"],
+                wrap=True,
             )
             
+            # Full Minutes Output
             minutes_output = gr.Textbox(
-                label="Full Minutes (Markdown)",
+                label="📄 Full Minutes (Markdown)",
                 lines=15,
+                max_lines=30,
+                value="",
                 interactive=False,
                 show_label=True,
                 show_copy_button=True,
+                elem_classes=["minutes-output"],
+                placeholder="Full formatted meeting minutes will appear here...",
             )
             
+            # Download Button
             download_output = gr.File(
-                label="Download as Markdown",
+                label="💾 Download as Markdown",
                 show_label=True,
+                file_count="single",
+                file_types=[".md"],
+                elem_classes=["download-button"],
+                interactive=False,
             )
     
-    # Privacy Notice
-    gr.Markdown(
-        """
-        > **Privacy Notice:** Audio is processed in-memory and not stored. 
-        > Do not upload confidential or sensitive meetings. 
-        > For enterprise use, consider self-hosting.
-        """,
-        elem_classes=["privacy-notice"],
+    # =========================================================================
+    # Examples Section
+    # =========================================================================
+    with gr.Row():
+        with gr.Column():
+            gr.HTML(
+                """
+                <div class="section-header" style="margin-top: 1rem;">
+                    <span>📚</span> Quick Examples
+                </div>
+                """
+            )
+            
+            gr.Examples(
+                examples=[
+                    ["", EXAMPLE_TRANSCRIPT_STANDUP, "Standup"],
+                    ["", EXAMPLE_TRANSCRIPT_CLIENT, "Client Call"],
+                    ["", EXAMPLE_TRANSCRIPT_BRAINSTORM, "Brainstorm"],
+                ],
+                inputs=[audio_input, transcript_input, meeting_type],
+                label="Click an example to try it:",
+                elem_classes=["examples-section"],
+                examples_per_page=3,
+            )
+    
+    # =========================================================================
+    # Footer
+    # =========================================================================
+    with gr.Row():
+        with gr.Column():
+            gr.HTML(
+                """
+                <div style="text-align: center; padding: 1rem; color: #6b7280; font-size: 0.875rem; margin-top: 1rem; border-top: 1px solid #e5e7eb;">
+                    <p>
+                        Built with 🤗 Hugging Face Transformers & Gradio | 
+                        <a href="https://github.com/insydr/MeetingMinutesGenerator" target="_blank" rel="noopener noreferrer">
+                            GitHub
+                        </a>
+                    </p>
+                    <p>
+                        Models: OpenAI Whisper-small | Facebook BART-large-cnn | Google Flan-T5-small
+                    </p>
+                </div>
+                """
+            )
+    
+    # =========================================================================
+    # Event Handlers
+    # =========================================================================
+    
+    # Audio upload handler - check duration
+    def on_audio_change(audio_path: Optional[str]) -> Tuple[gr.update, gr.update]:
+        """Handle audio file upload and check duration."""
+        if audio_path:
+            duration_msg = check_audio_duration(audio_path)
+            is_warning = "Warning" in duration_msg
+            return (
+                gr.update(value=duration_msg, visible=True),
+                gr.update(elem_classes=["duration-warning"] if is_warning else []),
+            )
+        return gr.update(value="", visible=False), gr.update()
+    
+    audio_input.change(
+        fn=on_audio_change,
+        inputs=[audio_input],
+        outputs=[duration_status, duration_status],
     )
     
-    # Examples
-    gr.Examples(
-        examples=[
-            ["", EXAMPLE_TRANSCRIPT_STANDUP, "Standup"],
-            ["", EXAMPLE_TRANSCRIPT_CLIENT, "Client Call"],
-        ],
-        inputs=[audio_input, transcript_input, meeting_type],
-        label="Quick Examples (Click to try)",
-    )
-    
-    # Event handlers
+    # Generate button click handler
     generate_btn.click(
+        fn=process_meeting,
+        inputs=[audio_input, transcript_input, meeting_type],
+        outputs=[summary_output, actions_output, minutes_output, download_output],
+        api_name="generate",
+    )
+    
+    # Keyboard shortcut for generate (Enter in transcript box)
+    transcript_input.submit(
         fn=process_meeting,
         inputs=[audio_input, transcript_input, meeting_type],
         outputs=[summary_output, actions_output, minutes_output, download_output],
