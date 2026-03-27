@@ -2027,7 +2027,8 @@ EXAMPLE_MEETINGS = [
 ]
 
 # Real audio examples with corresponding transcripts
-AUDIO_EXAMPLES = [
+# Only include audio files that actually exist
+_ALL_AUDIO_EXAMPLES = [
     # (audio_path, transcript_text, meeting_type, description)
     (
         os.path.join(SAMPLES_DIR, "standup_sample.wav"),
@@ -2060,6 +2061,16 @@ AUDIO_EXAMPLES = [
         "🎙️ Audio: Cross-team coordination (~50 sec)"
     ),
 ]
+
+# Filter to only include files that exist
+AUDIO_EXAMPLES = [
+    (audio_path, transcript, meeting_type, description)
+    for audio_path, transcript, meeting_type, description in _ALL_AUDIO_EXAMPLES
+    if os.path.exists(audio_path)
+]
+
+# Flag to indicate if audio examples are available
+AUDIO_EXAMPLES_AVAILABLE = len(AUDIO_EXAMPLES) > 0
 
 
 # =============================================================================
@@ -2771,25 +2782,27 @@ with gr.Blocks(
             
             # Enhanced examples with descriptions
             with gr.Tabs():
-                with gr.TabItem("🎙️ Audio Examples"):
-                    gr.Markdown(
-                        """
-                        **🎤 Real Audio Recordings** - Click any example to test audio transcription:
-                        
-                        These are pre-recorded meeting samples that demonstrate the audio transcription pipeline.
-                        Each sample is 40-55 seconds long and showcases different meeting types.
-                        """
-                    )
-                    gr.Examples(
-                        examples=[
-                            [audio_path, transcript, meeting_type]
-                            for audio_path, transcript, meeting_type, description in AUDIO_EXAMPLES
-                        ],
-                        inputs=[audio_input, transcript_input, meeting_type],
-                        label="🎙️ Select an audio example:",
-                        elem_classes=["examples-section"],
-                        examples_per_page=5,
-                    )
+                # Only show Audio Examples tab if audio files are available
+                if AUDIO_EXAMPLES_AVAILABLE:
+                    with gr.TabItem("🎙️ Audio Examples"):
+                        gr.Markdown(
+                            """
+                            **🎤 Real Audio Recordings** - Click any example to test audio transcription:
+                            
+                            These are pre-recorded meeting samples that demonstrate the audio transcription pipeline.
+                            Each sample is 40-55 seconds long and showcases different meeting types.
+                            """
+                        )
+                        gr.Examples(
+                            examples=[
+                                [audio_path, transcript, meeting_type]
+                                for audio_path, transcript, meeting_type, description in AUDIO_EXAMPLES
+                            ],
+                            inputs=[audio_input, transcript_input, meeting_type],
+                            label="🎙️ Select an audio example:",
+                            elem_classes=["examples-section"],
+                            examples_per_page=5,
+                        )
                 
                 with gr.TabItem("📝 Text Examples"):
                     gr.Examples(
@@ -2807,22 +2820,41 @@ with gr.Blocks(
                     )
                 
                 with gr.TabItem("🎯 By Meeting Type"):
-                    gr.Markdown(
-                        """
-                        **Available Example Types:**
-                        
-                        | Type | Audio | Text | Description |
-                        |------|-------|------|-------------|
-                        | 🏃 **Standup** | ✅ 40 sec | ✅ | Quick team sync with progress updates |
-                        | 📞 **Client Call** | ✅ 45 sec | ✅ | External meeting with deliverables |
-                        | 💡 **Brainstorm** | ✅ 55 sec | ✅ | Creative session with voting |
-                        | 🔄 **Retrospective** | ✅ 50 sec | ✅ | Sprint review with improvements |
-                        | 🤝 **Quick Sync** | ✅ 50 sec | ✅ | Cross-team coordination |
-                        
-                        🎙️ **Audio examples** demonstrate the transcription pipeline with real recordings.
-                        📝 **Text examples** allow instant processing without audio upload.
-                        """
-                    )
+                    if AUDIO_EXAMPLES_AVAILABLE:
+                        gr.Markdown(
+                            """
+                            **Available Example Types:**
+                            
+                            | Type | Audio | Text | Description |
+                            |------|-------|------|-------------|
+                            | 🏃 **Standup** | ✅ 40 sec | ✅ | Quick team sync with progress updates |
+                            | 📞 **Client Call** | ✅ 45 sec | ✅ | External meeting with deliverables |
+                            | 💡 **Brainstorm** | ✅ 55 sec | ✅ | Creative session with voting |
+                            | 🔄 **Retrospective** | ✅ 50 sec | ✅ | Sprint review with improvements |
+                            | 🤝 **Quick Sync** | ✅ 50 sec | ✅ | Cross-team coordination |
+                            
+                            🎙️ **Audio examples** demonstrate the transcription pipeline with real recordings.
+                            📝 **Text examples** allow instant processing without audio upload.
+                            """
+                        )
+                    else:
+                        gr.Markdown(
+                            """
+                            **Available Example Types:**
+                            
+                            | Type | Text | Description |
+                            |------|------|-------------|
+                            | 🏃 **Standup** | ✅ | Quick team sync with progress updates |
+                            | 📞 **Client Call** | ✅ | External meeting with deliverables |
+                            | 💡 **Brainstorm** | ✅ | Creative session with voting |
+                            | 🔄 **Retrospective** | ✅ | Sprint review with improvements |
+                            | 🤝 **Quick Sync** | ✅ | Cross-team coordination |
+                            
+                            📝 **Text examples** allow instant processing without audio upload.
+                            
+                            💡 *Tip: Upload your own audio files to test the transcription pipeline!*
+                            """
+                        )
                     
                     # Quick-select buttons for each type
                     with gr.Row():
