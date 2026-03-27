@@ -1243,6 +1243,167 @@ def format_meeting_minutes(
 
 
 # =============================================================================
+# Download Helper Functions - FR-8
+# =============================================================================
+
+def create_download_file(
+    minutes_markdown: str,
+    meeting_type: str,
+    output_dir: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Create a downloadable Markdown file from meeting minutes.
+    
+    Implements FR-8: Document Download functionality.
+    
+    Args:
+        minutes_markdown: The formatted markdown content
+        meeting_type: Type of meeting for filename
+        output_dir: Optional directory for output (defaults to temp)
+        
+    Returns:
+        Path to created file, or None if creation failed
+    """
+    if not minutes_markdown or not minutes_markdown.strip():
+        logger.warning("No minutes content to save")
+        return None
+    
+    try:
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_meeting_type = meeting_type.lower().replace(" ", "_").replace("-", "_")
+        filename = f"meeting_minutes_{safe_meeting_type}_{timestamp}.md"
+        
+        # Use provided output directory or temp directory
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+            file_path = os.path.join(output_dir, filename)
+        else:
+            file_path = os.path.join(tempfile.gettempdir(), filename)
+        
+        # Write content with UTF-8 encoding
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(minutes_markdown)
+        
+        logger.info(f"Created download file: {file_path}")
+        return file_path
+        
+    except Exception as e:
+        logger.error(f"Failed to create download file: {str(e)}")
+        return None
+
+
+def create_multiple_format_downloads(
+    minutes_markdown: str,
+    meeting_type: str,
+    include_txt: bool = True,
+) -> Dict[str, Optional[str]]:
+    """
+    Create downloads in multiple formats.
+    
+    Args:
+        minutes_markdown: The formatted markdown content
+        meeting_type: Type of meeting for filename
+        include_txt: Whether to also create a plain text version
+        
+    Returns:
+        Dict mapping format names to file paths
+    """
+    results = {
+        "markdown": create_download_file(minutes_markdown, meeting_type),
+    }
+    
+    if include_txt and minutes_markdown:
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_meeting_type = meeting_type.lower().replace(" ", "_")
+            txt_filename = f"meeting_minutes_{safe_meeting_type}_{timestamp}.txt"
+            txt_path = os.path.join(tempfile.gettempdir(), txt_filename)
+            
+            # Strip markdown formatting for plain text
+            plain_text = minutes_markdown
+            # Remove markdown headers (### and ##)
+            plain_text = plain_text.replace("### ", "").replace("## ", "").replace("# ", "")
+            # Remove bold/italic markers
+            plain_text = plain_text.replace("**", "").replace("*", "")
+            # Remove table formatting
+            plain_text = plain_text.replace("|", " | ")
+            
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(plain_text)
+            
+            results["txt"] = txt_path
+            
+        except Exception as e:
+            logger.error(f"Failed to create TXT file: {str(e)}")
+            results["txt"] = None
+    
+    return results
+
+
+def get_copy_to_clipboard_html(element_id: str = "minutes-output") -> str:
+    """
+    Generate HTML for a copy-to-clipboard button with JavaScript.
+    
+    Args:
+        element_id: ID of the element to copy from
+        
+    Returns:
+        HTML string with embedded JavaScript
+    """
+    return f"""
+    <div style="display: flex; gap: 0.5rem; margin-top: 0.5rem;">
+        <button 
+            onclick="copyToClipboard()" 
+            style="
+                background-color: #3b82f6;
+                color: white;
+                border: none;
+                padding: 0.5rem 1rem;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 0.875rem;
+                display: flex;
+                align-items: center;
+                gap: 0.25rem;
+            "
+        >
+            📋 Copy Minutes
+        </button>
+        <span id="copy-feedback" style="color: #22c55e; font-size: 0.875rem; display: none;">
+            ✅ Copied!
+        </span>
+    </div>
+    
+    <script>
+    function copyToClipboard() {{
+        const minutesElement = document.querySelector('[data-testid="textbox"]');
+        if (minutesElement) {{
+            const text = minutesElement.value || minutesElement.textContent;
+            navigator.clipboard.writeText(text).then(() => {{
+                const feedback = document.getElementById('copy-feedback');
+                feedback.style.display = 'inline';
+                setTimeout(() => {{
+                    feedback.style.display = 'none';
+                }}, 2000);
+            }}).catch(err => {{
+                console.error('Failed to copy:', err);
+                alert('Failed to copy to clipboard. Please select and copy manually.');
+            }});
+        }} else {{
+            // Fallback: try to find by id
+            const element = document.getElementById('{element_id}');
+            if (element) {{
+                const text = element.value || element.textContent;
+                navigator.clipboard.writeText(text);
+            }}
+        }}
+    }}
+    </script>
+    """
+
+
+# =============================================================================
 # Main Processing Function
 # =============================================================================
 
@@ -1507,7 +1668,7 @@ def process_meeting(
 # Gradio Interface - Based on PRD Section 8: UI/UX Specifications
 # =============================================================================
 
-# Example transcripts for quick testing
+# Example transcripts for quick testing (FR-9.4)
 EXAMPLE_TRANSCRIPT_STANDUP = """Team discussed Q3 goals and project timeline updates. 
 Alex mentioned that the design team needs more time for the UI overhaul, approximately 2 more weeks.
 Jordan agreed to update the project timeline document by next Monday.
@@ -1558,6 +1719,63 @@ Decisions:
 - Product team to research integration APIs
 
 Next brainstorming session scheduled for same time next month."""
+
+EXAMPLE_TRANSCRIPT_RETROSPECTIVE = """Sprint 14 Retrospective - March 2024
+Duration: 45 minutes
+Participants: Dev Team (5 members), Scrum Master
+
+What went well:
+- Completed 18 story points (target was 15)
+- CI/CD pipeline improvements reduced deployment time by 40%
+- Team collaboration on the authentication feature was excellent
+- Daily standups were focused and efficient
+
+What didn't go well:
+- Story "User Profile Redesign" was blocked for 3 days waiting for design assets
+- Two critical bugs found in production required hotfixes
+- API documentation is still outdated
+- Testing environment was unstable during the sprint
+
+Action items:
+1. Alex will set up a design review checkpoint at sprint planning to prevent future blocking issues - by next Monday
+2. Jordan will create automated test suite for authentication module - by end of next sprint
+3. Sarah will update API documentation and set up automated docs generation - by Friday
+4. Mike will investigate testing environment stability issues and propose solutions - by Wednesday
+5. Schedule mid-sprint check-ins to identify blockers earlier - ongoing
+
+Team voted to focus on stability improvements for next sprint."""
+
+# Extended example set with more variety
+EXAMPLE_TRANSCRIPT_QUICK_SYNC = """Quick sync between Marketing and Engineering
+
+Present: Rachel (Marketing), Tom (Engineering)
+
+Rachel: The campaign launch is next Tuesday. How's the landing page coming along?
+
+Tom: Almost done. I need the final copy and images by Thursday EOD to make the deadline.
+
+Rachel: I'll have the copy to you by tomorrow. Images are being finalized by the design team today. Can you also add the tracking pixels we discussed?
+
+Tom: Sure, send me the tracking requirements. I'll implement them along with the page. What about the A/B test variants?
+
+Rachel: We'll need two variants. I'll send the specs. Also, who's handling the DNS configuration?
+
+Tom: That's Jordan's area. He's back from vacation Monday. I'll make sure he prioritizes it.
+
+Action items agreed:
+- Rachel: Send copy by tomorrow, images by Thursday, tracking specs by Wednesday
+- Tom: Implement tracking pixels, coordinate with Jordan on DNS - by Monday
+- DNS configuration must be complete by Friday before launch"""
+
+# Example data structure for gr.Examples component
+EXAMPLE_MEETINGS = [
+    # (audio_path, transcript_text, meeting_type)
+    ("", EXAMPLE_TRANSCRIPT_STANDUP, "Standup", "Quick daily team standup with 3 action items"),
+    ("", EXAMPLE_TRANSCRIPT_CLIENT, "Client Call", "Client progress review with 4 action items"),
+    ("", EXAMPLE_TRANSCRIPT_BRAINSTORM, "Brainstorm", "Feature prioritization with voting results"),
+    ("", EXAMPLE_TRANSCRIPT_RETROSPECTIVE, "Retrospective", "Sprint review with 5 improvement actions"),
+    ("", EXAMPLE_TRANSCRIPT_QUICK_SYNC, "Other", "Cross-team coordination with clear deadlines"),
+]
 
 
 # =============================================================================
@@ -1701,6 +1919,52 @@ CUSTOM_CSS = """
     margin: 0 0 0.5rem 0;
     color: #374151;
     font-size: 0.95rem;
+}
+
+/* Copy Button & Status */
+.copy-button {
+    background-color: #3b82f6 !important;
+}
+
+.copy-status {
+    color: #22c55e;
+    font-size: 0.875rem;
+    padding: 0.25rem 0.5rem;
+    background-color: #f0fdf4;
+    border-radius: 4px;
+}
+
+/* Examples Section Styles */
+.examples-section {
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    background-color: #f9fafb;
+    border-radius: 8px;
+    border: 1px solid #e5e7eb;
+}
+
+.examples-section table {
+    font-size: 0.875rem;
+}
+
+.examples-section tr:hover {
+    background-color: #eff6ff;
+    cursor: pointer;
+}
+
+/* Example Quick-Select Buttons */
+.example-quick-btn {
+    margin: 0.25rem;
+    min-width: 120px;
+}
+
+/* Download Button Styling */
+.download-button {
+    margin-top: 0.5rem;
+    padding: 0.5rem;
+    background-color: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 8px;
 }
 
 /* Button Styling */
@@ -2181,8 +2445,19 @@ with gr.Blocks(
                 show_label=True,
                 show_copy_button=True,
                 elem_classes=["minutes-output"],
+                elem_id="minutes-output",
                 placeholder="Full formatted meeting minutes will appear here...",
             )
+            
+            # Copy & Download Row
+            with gr.Row():
+                copy_btn = gr.Button(
+                    "📋 Copy to Clipboard",
+                    size="sm",
+                    variant="secondary",
+                    elem_classes=["copy-button"],
+                )
+                copy_status = gr.Markdown("", visible=False, elem_classes=["copy-status"])
             
             # Download Button
             download_output = gr.File(
@@ -2195,29 +2470,62 @@ with gr.Blocks(
             )
     
     # =========================================================================
-    # Examples Section
+    # Examples Section (FR-9.4)
     # =========================================================================
     with gr.Row():
         with gr.Column():
             gr.HTML(
                 """
                 <div class="section-header" style="margin-top: 1rem;">
-                    <span>📚</span> Quick Examples
+                    <span>🧪</span> Example Gallery
                 </div>
+                <p style="font-size: 0.875rem; color: #6b7280; margin-bottom: 1rem;">
+                    Click any example to auto-fill the input and try the generator. Each example showcases different meeting types and action item patterns.
+                </p>
                 """
             )
             
-            gr.Examples(
-                examples=[
-                    ["", EXAMPLE_TRANSCRIPT_STANDUP, "Standup"],
-                    ["", EXAMPLE_TRANSCRIPT_CLIENT, "Client Call"],
-                    ["", EXAMPLE_TRANSCRIPT_BRAINSTORM, "Brainstorm"],
-                ],
-                inputs=[audio_input, transcript_input, meeting_type],
-                label="Click an example to try it:",
-                elem_classes=["examples-section"],
-                examples_per_page=3,
-            )
+            # Enhanced examples with descriptions
+            with gr.Tabs():
+                with gr.TabItem("📋 All Examples"):
+                    gr.Examples(
+                        examples=[
+                            ["", EXAMPLE_TRANSCRIPT_STANDUP, "Standup"],
+                            ["", EXAMPLE_TRANSCRIPT_CLIENT, "Client Call"],
+                            ["", EXAMPLE_TRANSCRIPT_BRAINSTORM, "Brainstorm"],
+                            ["", EXAMPLE_TRANSCRIPT_RETROSPECTIVE, "Retrospective"],
+                            ["", EXAMPLE_TRANSCRIPT_QUICK_SYNC, "Other"],
+                        ],
+                        inputs=[audio_input, transcript_input, meeting_type],
+                        label="Select an example to load:",
+                        elem_classes=["examples-section"],
+                        examples_per_page=5,
+                    )
+                
+                with gr.TabItem("🎯 By Meeting Type"):
+                    gr.Markdown(
+                        """
+                        **Available Example Types:**
+                        
+                        | Type | Description | Action Items |
+                        |------|-------------|--------------|
+                        | 🏃 **Standup** | Quick team sync with progress updates | 3 items |
+                        | 📞 **Client Call** | External meeting with deliverables | 4 items |
+                        | 💡 **Brainstorm** | Creative session with voting | 3 decisions |
+                        | 🔄 **Retrospective** | Sprint review with improvements | 5 items |
+                        | 🤝 **Other** | Cross-team coordination | 3 items |
+                        """
+                    )
+                    
+                    # Quick-select buttons for each type
+                    with gr.Row():
+                        example_standup_btn = gr.Button("🏃 Standup", size="sm")
+                        example_client_btn = gr.Button("📞 Client Call", size="sm")
+                        example_brainstorm_btn = gr.Button("💡 Brainstorm", size="sm")
+                    
+                    with gr.Row():
+                        example_retro_btn = gr.Button("🔄 Retrospective", size="sm")
+                        example_sync_btn = gr.Button("🤝 Quick Sync", size="sm")
     
     # =========================================================================
     # Footer
@@ -2308,6 +2616,80 @@ with gr.Blocks(
         fn=process_meeting,
         inputs=[audio_input, transcript_input, meeting_type],
         outputs=[summary_output, actions_output, minutes_output, download_output],
+    )
+    
+    # =========================================================================
+    # Copy to Clipboard Handler
+    # =========================================================================
+    def copy_minutes_to_clipboard(minutes_text: str) -> gr.update:
+        """Copy minutes text to clipboard (triggered by button click)."""
+        if minutes_text and minutes_text.strip():
+            # The actual copy happens via JavaScript in the browser
+            # This function provides feedback to the user
+            return gr.update(value="✅ Copied to clipboard!", visible=True)
+        return gr.update(value="❌ Nothing to copy", visible=True)
+    
+    copy_btn.click(
+        fn=copy_minutes_to_clipboard,
+        inputs=[minutes_output],
+        outputs=[copy_status],
+        js="""
+        () => {
+            const textbox = document.querySelector('[data-testid="textbox"]');
+            if (textbox) {
+                const text = textbox.value || textbox.textContent;
+                navigator.clipboard.writeText(text).then(() => {
+                    console.log('Copied to clipboard');
+                }).catch(err => {
+                    console.error('Failed to copy:', err);
+                    alert('Failed to copy. Please use Ctrl+C to copy manually.');
+                });
+            }
+        }
+        """,
+    )
+    
+    # =========================================================================
+    # Example Quick-Select Button Handlers
+    # =========================================================================
+    def load_example_standup():
+        return gr.update(value=EXAMPLE_TRANSCRIPT_STANDUP), gr.update(value="Standup")
+    
+    def load_example_client():
+        return gr.update(value=EXAMPLE_TRANSCRIPT_CLIENT), gr.update(value="Client Call")
+    
+    def load_example_brainstorm():
+        return gr.update(value=EXAMPLE_TRANSCRIPT_BRAINSTORM), gr.update(value="Brainstorm")
+    
+    def load_example_retro():
+        return gr.update(value=EXAMPLE_TRANSCRIPT_RETROSPECTIVE), gr.update(value="Retrospective")
+    
+    def load_example_sync():
+        return gr.update(value=EXAMPLE_TRANSCRIPT_QUICK_SYNC), gr.update(value="Other")
+    
+    example_standup_btn.click(
+        fn=load_example_standup,
+        outputs=[transcript_input, meeting_type],
+    )
+    
+    example_client_btn.click(
+        fn=load_example_client,
+        outputs=[transcript_input, meeting_type],
+    )
+    
+    example_brainstorm_btn.click(
+        fn=load_example_brainstorm,
+        outputs=[transcript_input, meeting_type],
+    )
+    
+    example_retro_btn.click(
+        fn=load_example_retro,
+        outputs=[transcript_input, meeting_type],
+    )
+    
+    example_sync_btn.click(
+        fn=load_example_sync,
+        outputs=[transcript_input, meeting_type],
     )
 
 
