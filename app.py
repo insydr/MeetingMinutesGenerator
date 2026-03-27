@@ -7,30 +7,44 @@ into structured, actionable meeting minutes.
 
 This application uses:
 - OpenAI Whisper-small for audio transcription
-- Facebook BART-large-cnn for text summarization  
+- Facebook BART-large-cnn for text summarization
 - Google Flan-T5-small for action item extraction
 
 Deployed on Hugging Face Spaces (CPU tier).
+
+Based on PRD Section 7: Technical Architecture
 """
 
 import os
+import sys
+import signal
 import tempfile
+import logging
 from datetime import datetime
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Dict, Any, Union, Callable
+from dataclasses import dataclass
+from enum import Enum
 
 import gradio as gr
 import torch
-from transformers import (
-    pipeline,
-    AutoModelForSpeechSeq2Seq,
-    AutoProcessor,
-    AutoModelForSeq2SeqLM,
-    AutoTokenizer,
+
+# =============================================================================
+# Logging Configuration
+# =============================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # Configuration
 # =============================================================================
+
+# Environment flags
+MOCK_MODE = os.environ.get("MEETING_MINUTES_MOCK_MODE", "false").lower() == "true"
+DEBUG_MODE = os.environ.get("MEETING_MINUTES_DEBUG", "false").lower() == "true"
 
 # Model identifiers
 WHISPER_MODEL_ID = "openai/whisper-small"
@@ -39,7 +53,14 @@ FLAN_T5_MODEL_ID = "google/flan-t5-small"
 
 # Processing constraints for CPU tier
 MAX_AUDIO_DURATION_SECONDS = 300  # 5 minutes recommended max
-MAX_TRANSCRIPT_LENGTH = 8000  # Characters for processing
+MAX_TRANSCRIPT_LENGTH = 10000  # Characters for processing
+MAX_PROCESSING_TIMEOUT = 120  # Total processing timeout in seconds
+
+# Model constraints
+BART_MAX_INPUT_TOKENS = 1024  # BART max input length
+SUMMARY_MAX_LENGTH = 150  # Maximum summary tokens
+SUMMARY_MIN_LENGTH = 40  # Minimum summary tokens
+CHUNK_OVERLAP_CHARS = 200  # Overlap between chunks for context
 
 # Device configuration
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -47,97 +68,388 @@ TORCH_DTYPE = torch.float32  # Use float32 for CPU compatibility
 
 
 # =============================================================================
-# Global Model Loading
+# Data Classes
 # =============================================================================
 
-print("Loading models... This may take a few minutes on first run.")
+class ProcessingStage(Enum):
+    """Enum for tracking processing stages."""
+    INITIALIZING = "initializing"
+    INPUT_ROUTING = "input_routing"
+    TRANSCRIPTION = "transcription"
+    SUMMARIZATION = "summarization"
+    EXTRACTION = "extraction"
+    FORMATTING = "formatting"
+    COMPLETE = "complete"
+    ERROR = "error"
 
-# Audio Transcription Model: Whisper-small
-print(f"Loading Whisper model: {WHISPER_MODEL_ID}")
-whisper_processor = AutoProcessor.from_pretrained(WHISPER_MODEL_ID)
-whisper_model = AutoModelForSpeechSeq2Seq.from_pretrained(
-    WHISPER_MODEL_ID,
-    torch_dtype=TORCH_DTYPE,
-    low_cpu_mem_usage=True,
-    use_safetensors=True,
-)
-whisper_model.to(DEVICE)
 
-# ASR Pipeline for transcription
-transcriber = pipeline(
-    "automatic-speech-recognition",
-    model=whisper_model,
-    processor=whisper_processor,
-    torch_dtype=TORCH_DTYPE,
-    device=0 if DEVICE == "cuda" else -1,
-)
+@dataclass
+class ProcessingResult:
+    """Structured result from meeting processing."""
+    success: bool
+    summary_text: str
+    action_items_list: List[Dict[str, str]]
+    full_minutes_markdown: str
+    transcript: str
+    error_message: Optional[str] = None
+    processing_time: Optional[float] = None
 
-# Summarization Model: BART-large-cnn
-print(f"Loading BART model: {BART_MODEL_ID}")
-summarizer = pipeline(
-    "summarization",
-    model=BART_MODEL_ID,
-    torch_dtype=TORCH_DTYPE,
-    device=0 if DEVICE == "cuda" else -1,
-)
 
-# Action Item Extraction Model: Flan-T5-small
-print(f"Loading Flan-T5 model: {FLAN_T5_MODEL_ID}")
-flan_tokenizer = AutoTokenizer.from_pretrained(FLAN_T5_MODEL_ID)
-flan_model = AutoModelForSeq2SeqLM.from_pretrained(
-    FLAN_T5_MODEL_ID,
-    torch_dtype=TORCH_DTYPE,
-    low_cpu_mem_usage=True,
-)
-flan_model.to(DEVICE)
+@dataclass
+class ModelLoadResult:
+    """Result of model loading attempt."""
+    success: bool
+    model_name: str
+    error_message: Optional[str] = None
 
-print("All models loaded successfully!")
+
+# =============================================================================
+# Global Model Containers
+# =============================================================================
+
+class ModelContainer:
+    """
+    Container for globally loaded models.
+    Models are loaded once at startup and reused for all requests.
+    """
+    
+    def __init__(self, mock_mode: bool = False):
+        self.mock_mode = mock_mode
+        self._transcriber = None
+        self._summarizer = None
+        self._extractor = None
+        self._load_results: List[ModelLoadResult] = []
+        
+    @property
+    def transcriber(self):
+        """Get the transcriber pipeline."""
+        return self._transcriber
+    
+    @property
+    def summarizer(self):
+        """Get the summarizer pipeline."""
+        return self._summarizer
+    
+    @property
+    def extractor(self):
+        """Get the extractor pipeline."""
+        return self._extractor
+    
+    @property
+    def is_loaded(self) -> bool:
+        """Check if all models are loaded."""
+        if self.mock_mode:
+            return True
+        return all([
+            self._transcriber is not None,
+            self._summarizer is not None,
+            self._extractor is not None,
+        ])
+    
+    @property
+    def load_results(self) -> List[ModelLoadResult]:
+        """Get the list of model load results."""
+        return self._load_results
+    
+    def load_all_models(self) -> bool:
+        """
+        Load all models at startup.
+        
+        Returns:
+            True if all models loaded successfully, False otherwise
+        """
+        if self.mock_mode:
+            logger.info("Mock mode enabled - skipping model loading")
+            self._load_results = [
+                ModelLoadResult(True, "mock-transcriber"),
+                ModelLoadResult(True, "mock-summarizer"),
+                ModelLoadResult(True, "mock-extractor"),
+            ]
+            return True
+        
+        logger.info("Loading models... This may take a few minutes on first run.")
+        
+        # Load transcriber
+        transcriber_result = self._load_transcriber()
+        self._load_results.append(transcriber_result)
+        
+        # Load summarizer
+        summarizer_result = self._load_summarizer()
+        self._load_results.append(summarizer_result)
+        
+        # Load extractor
+        extractor_result = self._load_extractor()
+        self._load_results.append(extractor_result)
+        
+        all_success = all(r.success for r in self._load_results)
+        if all_success:
+            logger.info("All models loaded successfully!")
+        else:
+            failed = [r.model_name for r in self._load_results if not r.success]
+            logger.error(f"Failed to load models: {failed}")
+        
+        return all_success
+    
+    def _load_transcriber(self) -> ModelLoadResult:
+        """Load the Whisper ASR model."""
+        try:
+            logger.info(f"Loading Whisper model: {WHISPER_MODEL_ID}")
+            
+            from transformers import pipeline
+            
+            self._transcriber = pipeline(
+                "automatic-speech-recognition",
+                model=WHISPER_MODEL_ID,
+                torch_dtype=TORCH_DTYPE,
+                device=-1,  # CPU only
+            )
+            
+            logger.info("Whisper model loaded successfully")
+            return ModelLoadResult(True, WHISPER_MODEL_ID)
+            
+        except Exception as e:
+            logger.error(f"Failed to load Whisper model: {str(e)}")
+            return ModelLoadResult(False, WHISPER_MODEL_ID, str(e))
+    
+    def _load_summarizer(self) -> ModelLoadResult:
+        """Load the BART summarization model."""
+        try:
+            logger.info(f"Loading BART model: {BART_MODEL_ID}")
+            
+            from transformers import pipeline
+            
+            self._summarizer = pipeline(
+                "summarization",
+                model=BART_MODEL_ID,
+                torch_dtype=TORCH_DTYPE,
+                device=-1,  # CPU only
+            )
+            
+            logger.info("BART model loaded successfully")
+            return ModelLoadResult(True, BART_MODEL_ID)
+            
+        except Exception as e:
+            logger.error(f"Failed to load BART model: {str(e)}")
+            return ModelLoadResult(False, BART_MODEL_ID, str(e))
+    
+    def _load_extractor(self) -> ModelLoadResult:
+        """Load the Flan-T5 model for action item extraction."""
+        try:
+            logger.info(f"Loading Flan-T5 model: {FLAN_T5_MODEL_ID}")
+            
+            from transformers import pipeline
+            
+            self._extractor = pipeline(
+                "text2text-generation",
+                model=FLAN_T5_MODEL_ID,
+                torch_dtype=TORCH_DTYPE,
+                device=-1,  # CPU only
+            )
+            
+            logger.info("Flan-T5 model loaded successfully")
+            return ModelLoadResult(True, FLAN_T5_MODEL_ID)
+            
+        except Exception as e:
+            logger.error(f"Failed to load Flan-T5 model: {str(e)}")
+            return ModelLoadResult(False, FLAN_T5_MODEL_ID, str(e))
+
+
+# Initialize global model container
+models = ModelContainer(mock_mode=MOCK_MODE)
+
+
+# =============================================================================
+# Timeout Handler
+# =============================================================================
+
+class TimeoutError(Exception):
+    """Custom timeout exception."""
+    pass
+
+
+def timeout_handler(signum, frame):
+    """Signal handler for timeout."""
+    raise TimeoutError("Processing timeout exceeded")
+
+
+def with_timeout(seconds: int):
+    """
+    Decorator to add timeout protection to a function.
+    Note: Only works on Unix-like systems.
+    
+    Args:
+        seconds: Maximum execution time in seconds
+    """
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            if sys.platform == "win32":
+                # Windows doesn't support SIGALRM, run without timeout
+                return func(*args, **kwargs)
+            
+            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
+            signal.alarm(seconds)
+            try:
+                result = func(*args, **kwargs)
+            finally:
+                signal.alarm(0)
+                signal.signal(signal.SIGALRM, old_handler)
+            return result
+        return wrapper
+    return decorator
+
+
+# =============================================================================
+# Mock Implementations for Testing
+# =============================================================================
+
+def mock_transcribe(audio_path: str) -> str:
+    """Mock transcription for testing."""
+    return """Team discussed Q3 goals and project timeline updates. 
+Alex mentioned that the design team needs more time for the UI overhaul, approximately 2 more weeks.
+Jordan agreed to update the project timeline document by next Monday.
+Sarah will schedule a client demo for the following week.
+The team also discussed the new feature requests from the marketing team.
+Key decisions: Push the release date to end of Q3, prioritize mobile responsiveness.
+Next meeting scheduled for Friday at 2 PM."""
+
+
+def mock_summarize(text: str) -> str:
+    """Mock summarization for testing."""
+    return "The team discussed Q3 goals, agreed to push the release date, and assigned action items to Alex, Jordan, and Sarah for follow-up tasks."
+
+
+def mock_extract_action_items(text: str) -> List[Dict[str, str]]:
+    """Mock action item extraction for testing."""
+    return [
+        {"task": "Complete UI overhaul", "owner": "Alex", "deadline": "2 weeks"},
+        {"task": "Update project timeline document", "owner": "Jordan", "deadline": "Next Monday"},
+        {"task": "Schedule client demo", "owner": "Sarah", "deadline": "Next week"},
+    ]
 
 
 # =============================================================================
 # Processing Functions
 # =============================================================================
 
-def transcribe_audio(audio_path: Optional[str]) -> str:
+def transcribe_audio(
+    audio_path: Union[str, bytes],
+    progress_callback: Optional[Callable[[float, str], None]] = None,
+) -> str:
     """
     Transcribe audio file to text using Whisper-small.
     
     Args:
-        audio_path: Path to the audio file (WAV, MP3, M4A, WebM)
+        audio_path: Path to the audio file (WAV, MP3, M4A, WebM) or bytes
+        progress_callback: Optional callback for progress updates
         
     Returns:
         Transcribed text string
         
     Raises:
         ValueError: If audio_path is None or empty
+        RuntimeError: If transcription fails
     """
     if audio_path is None or audio_path == "":
         raise ValueError("No audio file provided")
     
-    print(f"Transcribing audio: {audio_path}")
+    logger.info(f"Transcribing audio: {audio_path if isinstance(audio_path, str) else 'bytes'}")
     
-    # Transcribe with Whisper
-    result = transcriber(
-        audio_path,
-        return_timestamps=False,
-        generate_kwargs={
-            "language": "english",
-            "task": "transcribe",
-        }
-    )
+    if progress_callback:
+        progress_callback(0.1, "Loading audio file...")
     
-    transcript = result["text"].strip()
-    print(f"Transcription complete. Length: {len(transcript)} characters")
+    # Use mock if in mock mode
+    if models.mock_mode:
+        logger.info("Using mock transcription")
+        return mock_transcribe(audio_path if isinstance(audio_path, str) else "mock")
     
-    return transcript
+    if models.transcriber is None:
+        raise RuntimeError("Transcriber model not loaded")
+    
+    try:
+        if progress_callback:
+            progress_callback(0.3, "Running Whisper transcription...")
+        
+        # Transcribe with Whisper
+        result = models.transcriber(
+            audio_path,
+            return_timestamps=False,
+            generate_kwargs={
+                "language": "english",
+                "task": "transcribe",
+            }
+        )
+        
+        transcript = result["text"].strip()
+        logger.info(f"Transcription complete. Length: {len(transcript)} characters")
+        
+        if progress_callback:
+            progress_callback(1.0, "Transcription complete")
+        
+        return transcript
+        
+    except Exception as e:
+        logger.error(f"Transcription failed: {str(e)}")
+        raise RuntimeError(f"Transcription failed: {str(e)}")
 
 
-def generate_summary(text: str) -> str:
+def chunk_text_for_summarization(
+    text: str,
+    max_chars: int = 3000,
+    overlap: int = CHUNK_OVERLAP_CHARS,
+) -> List[str]:
+    """
+    Split long text into overlapping chunks for summarization.
+    
+    Args:
+        text: Full text to chunk
+        max_chars: Maximum characters per chunk
+        overlap: Overlap between chunks
+        
+    Returns:
+        List of text chunks
+    """
+    if len(text) <= max_chars:
+        return [text]
+    
+    chunks = []
+    start = 0
+    
+    while start < len(text):
+        end = start + max_chars
+        
+        # Try to break at sentence boundary
+        if end < len(text):
+            # Look for sentence ending within last 200 chars of chunk
+            last_period = text.rfind(".", start, end)
+            last_question = text.rfind("?", start, end)
+            last_exclaim = text.rfind("!", start, end)
+            
+            best_break = max(last_period, last_question, last_exclaim)
+            
+            if best_break > start + max_chars - 200:
+                end = best_break + 1
+        
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        
+        # Move start with overlap
+        start = end - overlap if end < len(text) else len(text)
+    
+    return chunks
+
+
+def generate_summary(
+    text: str,
+    progress_callback: Optional[Callable[[float, str], None]] = None,
+) -> str:
     """
     Generate an executive summary using BART-large-cnn.
+    Handles long transcripts by chunking and combining summaries.
     
     Args:
         text: Full meeting transcript text
+        progress_callback: Optional callback for progress updates
         
     Returns:
         Summary text (40-150 tokens)
@@ -145,135 +457,268 @@ def generate_summary(text: str) -> str:
     if not text or len(text.strip()) == 0:
         return "No transcript available to summarize."
     
-    print("Generating summary...")
+    logger.info("Generating summary...")
     
-    # Truncate if necessary (BART max input is 1024 tokens)
-    max_input_chars = 3000  # Approximate character limit
-    input_text = text[:max_input_chars] if len(text) > max_input_chars else text
+    if progress_callback:
+        progress_callback(0.1, "Preparing text for summarization...")
     
-    # Generate summary
-    summary_result = summarizer(
-        input_text,
-        max_length=150,
-        min_length=40,
-        do_sample=False,
-        truncation=True,
-    )
+    # Use mock if in mock mode
+    if models.mock_mode:
+        logger.info("Using mock summarization")
+        return mock_summarize(text)
     
-    summary = summary_result[0]["summary_text"].strip()
-    print(f"Summary generated. Length: {len(summary)} characters")
+    if models.summarizer is None:
+        raise RuntimeError("Summarizer model not loaded")
     
-    return summary
+    # Chunk text if necessary (BART max input is 1024 tokens ≈ 3000 chars)
+    chunks = chunk_text_for_summarization(text, max_chars=3000)
+    logger.info(f"Text split into {len(chunks)} chunk(s)")
+    
+    if progress_callback:
+        progress_callback(0.2, f"Processing {len(chunks)} text chunk(s)...")
+    
+    summaries = []
+    
+    for i, chunk in enumerate(chunks):
+        if progress_callback:
+            progress = 0.2 + (0.7 * (i / len(chunks)))
+            progress_callback(progress, f"Summarizing chunk {i+1}/{len(chunks)}...")
+        
+        try:
+            # Generate summary for each chunk
+            summary_result = models.summarizer(
+                chunk,
+                max_length=SUMMARY_MAX_LENGTH,
+                min_length=SUMMARY_MIN_LENGTH,
+                do_sample=False,
+                truncation=True,
+            )
+            
+            chunk_summary = summary_result[0]["summary_text"].strip()
+            summaries.append(chunk_summary)
+            logger.info(f"Chunk {i+1} summary: {len(chunk_summary)} chars")
+            
+        except Exception as e:
+            logger.warning(f"Failed to summarize chunk {i+1}: {str(e)}")
+            # Use first 200 chars as fallback
+            summaries.append(chunk[:200] + "...")
+    
+    # Combine summaries if multiple chunks
+    if len(summaries) == 1:
+        final_summary = summaries[0]
+    else:
+        # Combine and re-summarize if multiple chunks
+        combined = " ".join(summaries)
+        if len(combined) > 3000:
+            # Re-summarize the combined summaries
+            if progress_callback:
+                progress_callback(0.9, "Combining summaries...")
+            
+            try:
+                final_result = models.summarizer(
+                    combined,
+                    max_length=SUMMARY_MAX_LENGTH,
+                    min_length=SUMMARY_MIN_LENGTH,
+                    do_sample=False,
+                    truncation=True,
+                )
+                final_summary = final_result[0]["summary_text"].strip()
+            except Exception as e:
+                logger.warning(f"Failed to combine summaries: {str(e)}")
+                final_summary = combined[:500]
+        else:
+            final_summary = combined
+    
+    if progress_callback:
+        progress_callback(1.0, "Summarization complete")
+    
+    logger.info(f"Final summary: {len(final_summary)} chars")
+    return final_summary
 
 
-def extract_action_items(text: str) -> List[List[str]]:
+def extract_action_items(
+    text: str,
+    progress_callback: Optional[Callable[[float, str], None]] = None,
+) -> List[Dict[str, str]]:
     """
     Extract action items from transcript using Flan-T5-small with prompt engineering.
     
     Args:
         text: Full meeting transcript text
+        progress_callback: Optional callback for progress updates
         
     Returns:
-        List of [task, owner, deadline] lists
+        List of dicts with 'task', 'owner', 'deadline' keys
     """
     if not text or len(text.strip()) == 0:
         return []
     
-    print("Extracting action items...")
+    logger.info("Extracting action items...")
     
-    # Use first portion of text for extraction
-    max_input_chars = 2000
+    if progress_callback:
+        progress_callback(0.1, "Preparing extraction prompt...")
+    
+    # Use mock if in mock mode
+    if models.mock_mode:
+        logger.info("Using mock extraction")
+        return mock_extract_action_items(text)
+    
+    if models.extractor is None:
+        raise RuntimeError("Extractor model not loaded")
+    
+    # Use first portion of text for extraction (limit input length)
+    max_input_chars = 1000
     input_text = text[:max_input_chars] if len(text) > max_input_chars else text
     
-    # Construct extraction prompt
-    extraction_prompt = f"""Extract action items from this meeting transcript.
-For each action item, identify: the task description, the responsible person, and the deadline.
-If information is not mentioned, use "TBD".
+    if progress_callback:
+        progress_callback(0.3, "Running action item extraction...")
+    
+    # Construct extraction prompt with clear instructions
+    extraction_prompt = f"""Extract action items from this meeting transcript. 
+For each action item, identify the task description, responsible person, and deadline.
+Format each action item as: Task: [description] | Owner: [name] | Deadline: [date]
+Use 'TBD' if information is not mentioned in the transcript.
 
 Transcript:
 {input_text}
 
-List the action items in format: Task | Owner | Deadline
 Action items:"""
 
-    # Tokenize and generate
-    inputs = flan_tokenizer(
-        extraction_prompt,
-        return_tensors="pt",
-        max_length=512,
-        truncation=True,
-    ).to(DEVICE)
-    
-    with torch.no_grad():
-        outputs = flan_model.generate(
-            **inputs,
+    try:
+        # Generate extraction
+        result = models.extractor(
+            extraction_prompt,
             max_length=256,
             num_beams=2,
-            temperature=0.7,
+            temperature=0.3,
             do_sample=True,
         )
-    
-    extraction_result = flan_tokenizer.decode(outputs[0], skip_special_tokens=True)
-    print(f"Extraction result: {extraction_result}")
-    
-    # Parse extracted action items
-    # This is a placeholder - actual parsing logic would be more sophisticated
-    action_items = parse_action_items_from_text(extraction_result, text)
-    
-    return action_items
+        
+        extraction_output = result[0]["generated_text"].strip()
+        logger.info(f"Extraction output: {extraction_output}")
+        
+        if progress_callback:
+            progress_callback(0.8, "Parsing action items...")
+        
+        # Parse the output
+        action_items = parse_action_items_output(extraction_output, text)
+        
+        if progress_callback:
+            progress_callback(1.0, "Extraction complete")
+        
+        return action_items
+        
+    except Exception as e:
+        logger.error(f"Action item extraction failed: {str(e)}")
+        # Return fallback items
+        return [{
+            "task": "Review meeting transcript for action items",
+            "owner": "TBD",
+            "deadline": "TBD"
+        }]
 
 
-def parse_action_items_from_text(extraction: str, original_text: str) -> List[List[str]]:
+def parse_action_items_output(
+    extraction_output: str,
+    original_text: str,
+) -> List[Dict[str, str]]:
     """
-    Parse action items from model output.
+    Parse the model output to extract structured action items.
     
     Args:
-        extraction: Raw output from extraction model
+        extraction_output: Raw output from extraction model
         original_text: Original transcript for context
         
     Returns:
-        List of [task, owner, deadline] lists
+        List of dicts with 'task', 'owner', 'deadline' keys
     """
     action_items = []
     
-    # Simple parsing - split by lines and look for patterns
-    lines = extraction.strip().split("\n")
+    # Split by lines
+    lines = extraction_output.strip().split("\n")
     
     for line in lines:
         line = line.strip()
-        if not line or line.startswith("#"):
+        if not line:
             continue
+        
+        # Try different parsing patterns
+        item = None
+        
+        # Pattern 1: Task: X | Owner: Y | Deadline: Z
+        if "task:" in line.lower() and "|" in line:
+            parts = line.split("|")
+            task = ""
+            owner = "TBD"
+            deadline = "TBD"
             
-        # Try to parse "Task | Owner | Deadline" format
-        if "|" in line:
+            for part in parts:
+                part = part.strip()
+                if part.lower().startswith("task:"):
+                    task = part[5:].strip()
+                elif part.lower().startswith("owner:"):
+                    owner = part[6:].strip()
+                elif part.lower().startswith("deadline:"):
+                    deadline = part[9:].strip()
+            
+            if task:
+                item = {"task": task, "owner": owner, "deadline": deadline}
+        
+        # Pattern 2: Simple pipe-separated: Task | Owner | Deadline
+        elif "|" in line and "task:" not in line.lower():
             parts = [p.strip() for p in line.split("|")]
-            if len(parts) >= 1:
-                task = parts[0] if parts[0] else "TBD"
-                owner = parts[1] if len(parts) > 1 and parts[1] else "TBD"
-                deadline = parts[2] if len(parts) > 2 and parts[2] else "TBD"
-                action_items.append([task, owner, deadline])
+            if len(parts) >= 1 and parts[0]:
+                item = {
+                    "task": parts[0],
+                    "owner": parts[1] if len(parts) > 1 else "TBD",
+                    "deadline": parts[2] if len(parts) > 2 else "TBD",
+                }
+        
+        # Pattern 3: Numbered or bulleted items
+        elif line and (line[0].isdigit() or line.startswith("-") or line.startswith("•")):
+            # Clean up the line
+            clean_line = line.lstrip("0123456789.-•) ").strip()
+            if clean_line:
+                item = {"task": clean_line, "owner": "TBD", "deadline": "TBD"}
+        
+        # Pattern 4: Plain text line (treat as task description)
+        elif len(line) > 10:
+            item = {"task": line, "owner": "TBD", "deadline": "TBD"}
+        
+        if item and item["task"]:
+            # Validate task isn't just filler
+            if item["task"].lower() not in ["tbd", "none", "n/a", "-"]:
+                action_items.append(item)
     
-    # If no items found, provide a placeholder
-    if not action_items:
-        action_items = [["Review meeting transcript for action items", "TBD", "TBD"]]
+    # Deduplicate by task
+    seen_tasks = set()
+    unique_items = []
+    for item in action_items:
+        task_lower = item["task"].lower()
+        if task_lower not in seen_tasks:
+            seen_tasks.add(task_lower)
+            unique_items.append(item)
     
-    return action_items
+    # Limit to reasonable number
+    return unique_items[:10]
 
 
 def format_meeting_minutes(
     summary: str,
-    action_items: List[List[str]],
+    action_items: List[Dict[str, str]],
     meeting_type: str,
     timestamp: str,
+    transcript: str = "",
 ) -> str:
     """
     Format complete meeting minutes in Markdown.
     
     Args:
         summary: Executive summary text
-        action_items: List of [task, owner, deadline] lists
+        action_items: List of action item dicts
         meeting_type: Type of meeting
         timestamp: Generation timestamp
+        transcript: Original transcript (optional, for reference)
         
     Returns:
         Formatted Markdown string
@@ -297,21 +742,27 @@ def format_meeting_minutes(
 |------|-------|----------|
 """
     
-    for task, owner, deadline in action_items:
+    for item in action_items:
+        task = item.get("task", "TBD")
+        owner = item.get("owner", "TBD")
+        deadline = item.get("deadline", "TBD")
         minutes += f"| {task} | {owner} | {deadline} |\n"
+    
+    if not action_items:
+        minutes += "| No action items identified | TBD | TBD |\n"
     
     minutes += """
 ---
 
 ## Key Discussion Points
 
-*Key points extracted from the meeting will appear here.*
+*Review the executive summary above for the main topics discussed during the meeting.*
 
 ---
 
 ## Notes
 
-*Generated by Meeting Minutes Generator*
+*Generated by [Meeting Minutes Generator](https://github.com/insydr/MeetingMinutesGenerator)*
 """
     
     return minutes
@@ -322,7 +773,7 @@ def format_meeting_minutes(
 # =============================================================================
 
 def process_meeting(
-    audio: Optional[str],
+    audio: Optional[Union[str, bytes]],
     transcript_text: Optional[str],
     meeting_type: str,
     progress: gr.Progress = gr.Progress(),
@@ -330,71 +781,137 @@ def process_meeting(
     """
     Main processing function that orchestrates the full pipeline.
     
+    Implements PRD Section 7 Technical Architecture:
+    1. Input Routing - audio or text
+    2. Transcription - Whisper-small (if audio)
+    3. Summarization - BART-large-cnn with chunking
+    4. Action Item Extraction - Flan-T5-small with prompt engineering
+    5. Output Formatting - Markdown
+    
     Args:
-        audio: Path to uploaded audio file (or None)
+        audio: Path to uploaded audio file or bytes (or None)
         transcript_text: Pasted transcript text (or empty string)
         meeting_type: Selected meeting type
         progress: Gradio progress tracker
         
     Returns:
-        Tuple of (summary, action_items, formatted_minutes, markdown_file_path)
+        Tuple of (summary, action_items_dataframe, formatted_minutes, markdown_file_path)
     """
+    import time
+    start_time = time.time()
+    
     try:
+        # =====================================================================
+        # Stage 1: Input Routing
+        # =====================================================================
+        progress(0.05, desc="Validating input...")
+        logger.info(f"Processing request - Meeting type: {meeting_type}")
+        
         # Validate input
-        if (audio is None or audio == "") and (not transcript_text or transcript_text.strip() == ""):
+        has_audio = audio is not None and audio != ""
+        has_transcript = transcript_text and transcript_text.strip()
+        
+        if not has_audio and not has_transcript:
             gr.Warning("Please provide either an audio file or a transcript.")
             return "No input provided.", [], "No minutes generated.", None
         
-        # Step 1: Get transcript (from audio or text input)
+        # =====================================================================
+        # Stage 2: Transcription (if audio provided)
+        # =====================================================================
         progress(0.1, desc="Processing input...")
         
-        if audio and audio != "":
-            gr.Info("Transcribing audio... This may take 30-60 seconds.")
-            progress(0.2, desc="Transcribing audio...")
-            full_text = transcribe_audio(audio)
-        else:
-            gr.Info("Processing text transcript...")
-            full_text = transcript_text.strip()
+        full_transcript = ""
         
-        # Validate transcript length
-        if len(full_text) < 10:
+        if has_audio:
+            logger.info("Processing audio input")
+            gr.Info("Transcribing audio... This may take 30-60 seconds.")
+            
+            def transcription_progress(pct: float, msg: str):
+                progress(0.1 + (pct * 0.3), desc=msg)
+            
+            full_transcript = transcribe_audio(audio, transcription_progress)
+        else:
+            logger.info("Processing text input")
+            gr.Info("Processing text transcript...")
+            full_transcript = transcript_text.strip()
+        
+        # Validate transcript
+        if not full_transcript or len(full_transcript.strip()) < 10:
             gr.Warning("Transcript is too short. Please provide more content.")
             return "Transcript too short.", [], "No minutes generated.", None
         
-        # Step 2: Generate summary
-        progress(0.5, desc="Generating summary...")
-        summary = generate_summary(full_text)
+        # Truncate if too long
+        if len(full_transcript) > MAX_TRANSCRIPT_LENGTH:
+            logger.warning(f"Transcript truncated from {len(full_transcript)} to {MAX_TRANSCRIPT_LENGTH} chars")
+            full_transcript = full_transcript[:MAX_TRANSCRIPT_LENGTH]
         
-        # Step 3: Extract action items
+        # =====================================================================
+        # Stage 3: Summarization
+        # =====================================================================
+        progress(0.45, desc="Generating summary...")
+        
+        def summarization_progress(pct: float, msg: str):
+            progress(0.45 + (pct * 0.2), desc=msg)
+        
+        summary = generate_summary(full_transcript, summarization_progress)
+        
+        # =====================================================================
+        # Stage 4: Action Item Extraction
+        # =====================================================================
         progress(0.7, desc="Extracting action items...")
-        action_items = extract_action_items(full_text)
         
-        # Step 4: Format output
+        def extraction_progress(pct: float, msg: str):
+            progress(0.7 + (pct * 0.15), desc=msg)
+        
+        action_items = extract_action_items(full_transcript, extraction_progress)
+        
+        # =====================================================================
+        # Stage 5: Output Formatting
+        # =====================================================================
         progress(0.9, desc="Formatting minutes...")
+        
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         formatted_minutes = format_meeting_minutes(
             summary=summary,
             action_items=action_items,
             meeting_type=meeting_type,
             timestamp=timestamp,
+            transcript=full_transcript,
         )
         
-        # Step 5: Create downloadable file
+        # Create downloadable file
         file_name = f"meeting_minutes_{meeting_type.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
         temp_file_path = os.path.join(tempfile.gettempdir(), file_name)
         
         with open(temp_file_path, "w", encoding="utf-8") as f:
             f.write(formatted_minutes)
         
-        progress(1.0, desc="Complete!")
-        gr.Info("Meeting minutes generated successfully!")
+        # Calculate processing time
+        processing_time = time.time() - start_time
+        logger.info(f"Processing complete in {processing_time:.2f} seconds")
         
-        return summary, action_items, formatted_minutes, temp_file_path
+        progress(1.0, desc="Complete!")
+        gr.Info(f"Meeting minutes generated successfully! ({processing_time:.1f}s)")
+        
+        # Convert action items to list format for Dataframe
+        action_items_list = [
+            [item.get("task", "TBD"), item.get("owner", "TBD"), item.get("deadline", "TBD")]
+            for item in action_items
+        ]
+        
+        return summary, action_items_list, formatted_minutes, temp_file_path
+        
+    except TimeoutError:
+        error_msg = f"Processing timed out after {MAX_PROCESSING_TIMEOUT} seconds"
+        logger.error(error_msg)
+        gr.Error(error_msg)
+        return error_msg, [], "Processing timed out.", None
         
     except Exception as e:
-        gr.Error(f"An error occurred: {str(e)}")
-        print(f"Error in process_meeting: {str(e)}")
-        return f"Error: {str(e)}", [], "Processing failed.", None
+        error_msg = f"An error occurred: {str(e)}"
+        logger.error(f"Error in process_meeting: {str(e)}", exc_info=True)
+        gr.Error(error_msg)
+        return error_msg, [], f"Processing failed: {str(e)}", None
 
 
 # =============================================================================
@@ -402,13 +919,31 @@ def process_meeting(
 # =============================================================================
 
 # Example transcripts for quick testing
-EXAMPLE_TRANSCRIPT = """Team discussed Q3 goals and project timeline updates. 
+EXAMPLE_TRANSCRIPT_STANDUP = """Team discussed Q3 goals and project timeline updates. 
 Alex mentioned that the design team needs more time for the UI overhaul, approximately 2 more weeks.
 Jordan agreed to update the project timeline document by next Monday.
 Sarah will schedule a client demo for the following week.
 The team also discussed the new feature requests from the marketing team.
 Key decisions: Push the release date to end of Q3, prioritize mobile responsiveness.
 Next meeting scheduled for Friday at 2 PM."""
+
+EXAMPLE_TRANSCRIPT_CLIENT = """Client call with Acme Corporation regarding the enterprise software implementation project.
+Attendees: John (Client PM), Lisa (Client Tech Lead), Mike (Our Team), Sarah (Our PM)
+
+Discussion points:
+- Client expressed satisfaction with the current progress
+- Requested additional customization for reporting module - John will follow up
+- Lisa asked about API integration timeline - Mike confirmed it's on track for next sprint
+- Budget review scheduled for end of month
+- Concerns raised about data migration - Sarah to provide risk assessment by Wednesday
+
+Action items:
+- Mike to prepare API documentation for client review by Friday
+- Sarah to send project status report every Monday
+- John to confirm data migration requirements by next call
+- Schedule next call for Thursday 3pm
+
+Meeting concluded at 3:45pm with positive outlook on project progression."""
 
 with gr.Blocks(
     theme=gr.themes.Soft(),
@@ -422,6 +957,14 @@ with gr.Blocks(
         margin-top: 1rem;
         border-radius: 4px;
     }
+    .status-badge {
+        display: inline-block;
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.85rem;
+        margin-left: 0.5rem;
+    }
+    .mock-badge { background-color: #ffc107; color: #333; }
     """,
 ) as demo:
     
@@ -434,6 +977,12 @@ with gr.Blocks(
         """,
         elem_classes=["header-text"],
     )
+    
+    # Show mock mode indicator
+    if MOCK_MODE:
+        gr.Markdown(
+            """<span class="status-badge mock-badge">🧪 Mock Mode Active</span>""",
+        )
     
     # Main content area
     with gr.Row():
@@ -529,8 +1078,8 @@ with gr.Blocks(
     # Examples
     gr.Examples(
         examples=[
-            ["", EXAMPLE_TRANSCRIPT, "Standup"],
-            ["", EXAMPLE_TRANSCRIPT, "Client Call"],
+            ["", EXAMPLE_TRANSCRIPT_STANDUP, "Standup"],
+            ["", EXAMPLE_TRANSCRIPT_CLIENT, "Client Call"],
         ],
         inputs=[audio_input, transcript_input, meeting_type],
         label="Quick Examples (Click to try)",
@@ -545,14 +1094,38 @@ with gr.Blocks(
 
 
 # =============================================================================
-# Launch Application
+# Application Startup
 # =============================================================================
 
-if __name__ == "__main__":
-    print(f"Starting Meeting Minutes Generator on {DEVICE.upper()}")
-    print(f"Gradio version: {gr.__version__}")
-    print(f"PyTorch version: {torch.__version__}")
+def initialize_app():
+    """Initialize the application and load models."""
+    logger.info("=" * 60)
+    logger.info("Meeting Minutes Generator - Starting Up")
+    logger.info("=" * 60)
+    logger.info(f"Python version: {sys.version}")
+    logger.info(f"PyTorch version: {torch.__version__}")
+    logger.info(f"Gradio version: {gr.__version__}")
+    logger.info(f"Device: {DEVICE.upper()}")
+    logger.info(f"Mock mode: {MOCK_MODE}")
+    logger.info(f"Debug mode: {DEBUG_MODE}")
+    logger.info("=" * 60)
     
+    # Load models
+    success = models.load_all_models()
+    
+    if not success:
+        logger.error("Failed to load some models. Check logs for details.")
+        if not MOCK_MODE:
+            logger.warning("Consider enabling MOCK_MODE for testing")
+    
+    return success
+
+
+if __name__ == "__main__":
+    # Initialize and launch
+    initialize_app()
+    
+    logger.info("Launching Gradio interface...")
     demo.launch(
         share=False,
         show_error=True,
