@@ -53,8 +53,15 @@ FLAN_T5_MODEL_ID = "google/flan-t5-small"
 
 # Processing constraints for CPU tier
 MAX_AUDIO_DURATION_SECONDS = 300  # 5 minutes recommended max
+MAX_AUDIO_DURATION_HARD_LIMIT = 600  # 10 minutes hard limit
+MAX_AUDIO_FILE_SIZE_MB = 25  # 25MB max file size
 MAX_TRANSCRIPT_LENGTH = 10000  # Characters for processing
+MIN_TRANSCRIPT_WORDS = 50  # Minimum words for meaningful summary
 MAX_PROCESSING_TIMEOUT = 120  # Total processing timeout in seconds
+
+# Accepted audio formats (FR-1)
+ACCEPTED_AUDIO_FORMATS = [".wav", ".mp3", ".m4a", ".webm"]
+ACCEPTED_AUDIO_MIME_TYPES = ["audio/wav", "audio/mpeg", "audio/mp4", "audio/webm", "audio/x-m4a"]
 
 # Model constraints
 BART_MAX_INPUT_TOKENS = 1024  # BART max input length
@@ -101,6 +108,288 @@ class ModelLoadResult:
     success: bool
     model_name: str
     error_message: Optional[str] = None
+
+
+@dataclass
+class ValidationResult:
+    """Result of input validation."""
+    valid: bool
+    message: str
+    warning: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+# =============================================================================
+# Input Validation Functions - PRD Section 5.1 (FR-1, FR-2)
+# =============================================================================
+
+def validate_audio_input(audio_path: Optional[str]) -> ValidationResult:
+    """
+    Validate audio file input per FR-1.
+    
+    Checks:
+    - FR-1.1: File exists and is not empty
+    - FR-1.2: File size <= 25MB
+    - FR-1.3: Duration <= 10 minutes (hard limit), warn at 5 minutes
+    - FR-1.4: Format is WAV, MP3, M4A, or WebM
+    
+    Args:
+        audio_path: Path to uploaded audio file
+        
+    Returns:
+        ValidationResult with status and message
+    """
+    if not audio_path or audio_path == "":
+        return ValidationResult(
+            valid=False,
+            message="No audio file provided",
+        )
+    
+    # Check file exists
+    if not os.path.exists(audio_path):
+        return ValidationResult(
+            valid=False,
+            message="Audio file not found. Please re-upload.",
+        )
+    
+    # Check file extension/format (FR-1.4)
+    file_ext = os.path.splitext(audio_path)[1].lower()
+    if file_ext not in ACCEPTED_AUDIO_FORMATS:
+        return ValidationResult(
+            valid=False,
+            message=f"Unsupported format '{file_ext}'. Please use: WAV, MP3, M4A, or WebM.",
+        )
+    
+    # Check file size (FR-1.2)
+    file_size_mb = os.path.getsize(audio_path) / (1024 * 1024)
+    if file_size_mb > MAX_AUDIO_FILE_SIZE_MB:
+        return ValidationResult(
+            valid=False,
+            message=f"File too large ({file_size_mb:.1f}MB). Maximum size is {MAX_AUDIO_FILE_SIZE_MB}MB.",
+        )
+    
+    # Check duration (FR-1.3)
+    try:
+        import torchaudio
+        waveform, sample_rate = torchaudio.load(audio_path)
+        duration_seconds = waveform.shape[1] / sample_rate
+        duration_minutes = duration_seconds / 60
+        
+        metadata = {
+            "duration_seconds": duration_seconds,
+            "duration_minutes": duration_minutes,
+            "file_size_mb": file_size_mb,
+            "sample_rate": sample_rate,
+            "format": file_ext,
+        }
+        
+        # Hard limit check (10 minutes)
+        if duration_seconds > MAX_AUDIO_DURATION_HARD_LIMIT:
+            return ValidationResult(
+                valid=False,
+                message=f"Audio too long ({duration_minutes:.1f} minutes). Maximum is 10 minutes.",
+                metadata=metadata,
+            )
+        
+        # Warning for > 5 minutes
+        warning = None
+        if duration_seconds > MAX_AUDIO_DURATION_SECONDS:
+            warning = f"⚠️ Audio is {duration_minutes:.1f} minutes. Recommended max is 5 minutes. Processing may be slower."
+        
+        # Success with optional warning
+        minutes = int(duration_seconds // 60)
+        seconds = int(duration_seconds % 60)
+        message = f"✅ Valid audio: {minutes}:{seconds:02d} ({file_size_mb:.1f}MB)"
+        
+        return ValidationResult(
+            valid=True,
+            message=message,
+            warning=warning,
+            metadata=metadata,
+        )
+        
+    except Exception as e:
+        logger.warning(f"Could not validate audio duration: {str(e)}")
+        # Allow processing if duration check fails
+        return ValidationResult(
+            valid=True,
+            message=f"✅ Audio uploaded ({file_size_mb:.1f}MB)",
+            warning="Could not verify duration. Ensure recording is under 10 minutes.",
+            metadata={"file_size_mb": file_size_mb, "format": file_ext},
+        )
+
+
+def validate_text_input(text: Optional[str]) -> ValidationResult:
+    """
+    Validate text transcript input per FR-2.
+    
+    Checks:
+    - FR-2.1: Text is not empty after stripping whitespace
+    - FR-2.2: Warning if < 50 words (likely insufficient)
+    - FR-2.3: Auto-truncate if > 10,000 characters
+    
+    Args:
+        text: Pasted transcript text
+        
+    Returns:
+        ValidationResult with status and message
+    """
+    if not text:
+        return ValidationResult(
+            valid=False,
+            message="No transcript text provided",
+        )
+    
+    # Strip whitespace (FR-2.1)
+    stripped_text = text.strip()
+    
+    if not stripped_text:
+        return ValidationResult(
+            valid=False,
+            message="Transcript is empty. Please paste meeting text.",
+        )
+    
+    # Count words
+    words = stripped_text.split()
+    word_count = len(words)
+    char_count = len(stripped_text)
+    
+    metadata = {
+        "word_count": word_count,
+        "char_count": char_count,
+        "will_truncate": char_count > MAX_TRANSCRIPT_LENGTH,
+    }
+    
+    # Warning for short text (FR-2.2)
+    warning = None
+    if word_count < MIN_TRANSCRIPT_WORDS:
+        warning = f"⚠️ Only {word_count} words detected. For meaningful summaries, provide at least {MIN_TRANSCRIPT_WORDS} words."
+    
+    # Notice for long text (FR-2.3)
+    message = f"✅ Valid transcript: {word_count} words, {char_count:,} characters"
+    if char_count > MAX_TRANSCRIPT_LENGTH:
+        message = f"✅ Transcript: {word_count} words (will be truncated to {MAX_TRANSCRIPT_LENGTH:,} chars)"
+        warning = (warning + "\n" if warning else "") + f"📄 Long transcript detected. Only first {MAX_TRANSCRIPT_LENGTH:,} characters will be processed."
+    
+    return ValidationResult(
+        valid=True,
+        message=message,
+        warning=warning,
+        metadata=metadata,
+    )
+
+
+def get_audio_tips() -> str:
+    """
+    Return helpful tips for audio recording quality.
+    Per FR-9: User guidance.
+    """
+    return """
+### 🎤 Audio Recording Tips
+
+For best transcription and extraction results:
+
+1. **Quiet Environment**: Record in a quiet space with minimal background noise
+2. **Clear Speech**: Speak clearly and at a moderate pace
+3. **Good Microphone**: Use a quality microphone or headset
+4. **Single Speaker**: Best results with one clear speaker
+5. **Short Segments**: Keep recordings under 5 minutes for faster processing
+
+**Supported formats**: WAV, MP3, M4A, WebM
+**Maximum size**: 25MB
+**Recommended duration**: Under 5 minutes
+"""
+
+
+def get_transcript_tips() -> str:
+    """
+    Return helpful tips for transcript input.
+    Per FR-9: User guidance.
+    """
+    return """
+### 📝 Transcript Tips
+
+For best summarization and extraction results:
+
+1. **Include Context**: Add speaker names and meeting context
+2. **Clear Commitments**: Use phrases like "I will...", "John agreed to..."
+3. **Specific Deadlines**: Mention exact dates and times
+4. **Structured Content**: Use paragraphs and bullet points
+5. **Sufficient Length**: At least 50 words for meaningful summaries
+
+**Example good transcript**:
+```
+Team standup - March 27, 2024
+Attendees: Alex, Jordan, Sarah
+
+Alex: I'll complete the UI mockups by Friday.
+Jordan: Agreed to update the project timeline by next Monday.
+Sarah: Will schedule the client demo for next week.
+```
+"""
+
+
+def get_quality_tips() -> str:
+    """
+    Return comprehensive quality tips for better results.
+    Per FR-9: User guidance.
+    """
+    return """
+### 💡 Tips for Better Results
+
+#### Recording Quality
+- Use a quiet environment for recordings
+- Speak clearly and at a moderate pace
+- Position microphone close to speakers
+- Avoid overlapping conversations
+
+#### Meeting Structure
+- State names and roles at the beginning
+- Verbally confirm commitments: "Sarah will... by Friday"
+- Summarize decisions at the end
+- Assign clear owners and deadlines
+
+#### For Long Meetings
+- Consider splitting into segments (< 5 minutes each)
+- Process key sections separately
+- Focus on action-oriented portions
+"""
+
+
+def get_privacy_notice() -> str:
+    """
+    Return privacy notice per PRD NFR-4.
+    """
+    return """
+> 🔒 **Privacy Notice**
+> 
+> Audio is processed **in-memory and not stored** on our servers.
+> 
+> ⚠️ **Do not upload**:
+> - Confidential business meetings
+> - Personal or sensitive information
+> - Meetings with non-public financial data
+> - HR or legal discussions
+> 
+> For enterprise use with sensitive data, consider **self-hosting** this application.
+"""
+
+
+def get_processing_stage_message(stage: ProcessingStage) -> str:
+    """
+    Get user-friendly message for processing stage.
+    """
+    messages = {
+        ProcessingStage.INITIALIZING: "🔄 Initializing...",
+        ProcessingStage.INPUT_ROUTING: "📂 Validating input...",
+        ProcessingStage.TRANSCRIPTION: "🎤 Transcribing audio...",
+        ProcessingStage.SUMMARIZATION: "📝 Generating summary...",
+        ProcessingStage.EXTRACTION: "✅ Extracting action items...",
+        ProcessingStage.FORMATTING: "✨ Formatting minutes...",
+        ProcessingStage.COMPLETE: "✅ Complete!",
+        ProcessingStage.ERROR: "❌ Error occurred",
+    }
+    return messages.get(stage, "Processing...")
 
 
 # =============================================================================
@@ -993,17 +1282,52 @@ def process_meeting(
     
     try:
         # =====================================================================
-        # Stage 1: Input Routing (FR-1, FR-2)
+        # Stage 1: Input Validation & Routing (FR-1, FR-2)
         # =====================================================================
-        progress(0.05, desc="Validating input...")
+        progress(0.05, desc=get_processing_stage_message(ProcessingStage.INPUT_ROUTING))
         logger.info(f"Processing request - Meeting type: {meeting_type}")
         
-        # Validate input per FR-1.1, FR-2.2
         has_audio = audio is not None and audio != ""
         has_transcript = transcript_text and transcript_text.strip()
         
+        # Validate audio input if provided (FR-1)
+        audio_metadata = None
+        if has_audio:
+            audio_validation = validate_audio_input(audio)
+            if not audio_validation.valid:
+                gr.Warning(audio_validation.message)
+                return (
+                    "*Summary will appear here after processing...*",
+                    [],
+                    f"❌ **Input Error:** {audio_validation.message}",
+                    None
+                )
+            # Show validation success
+            gr.Info(audio_validation.message)
+            if audio_validation.warning:
+                gr.Warning(audio_validation.warning)
+            audio_metadata = audio_validation.metadata
+        
+        # Validate text input if provided (FR-2)
+        text_metadata = None
+        if has_transcript:
+            text_validation = validate_text_input(transcript_text)
+            if not text_validation.valid:
+                gr.Warning(text_validation.message)
+                return (
+                    "*Summary will appear here after processing...*",
+                    [],
+                    f"❌ **Input Error:** {text_validation.message}",
+                    None
+                )
+            # Show validation success
+            gr.Info(text_validation.message)
+            if text_validation.warning:
+                gr.Warning(text_validation.warning)
+            text_metadata = text_validation.metadata
+        
+        # Check that at least one input is valid
         if not has_audio and not has_transcript:
-            # FR-9.1: Clear error messages
             gr.Warning("Please upload audio or paste a transcript")
             return (
                 "*Summary will appear here after processing...*",
@@ -1013,23 +1337,19 @@ def process_meeting(
             )
         
         # Show processing time estimate (FR-9.3)
-        if has_audio:
-            try:
-                import torchaudio
-                waveform, sample_rate = torchaudio.load(audio)
-                duration = waveform.shape[1] / sample_rate
-                time_estimate = get_processing_time_estimate("audio", int(duration))
-                gr.Info(f"🎙️ Processing audio... Estimated time: {time_estimate}")
-            except:
-                gr.Info("🎙️ Transcribing audio... This may take 30-60 seconds.")
-        else:
-            time_estimate = get_processing_time_estimate("text", len(transcript_text))
+        if has_audio and audio_metadata:
+            duration = audio_metadata.get("duration_seconds", 60)
+            time_estimate = get_processing_time_estimate("audio", int(duration))
+            gr.Info(f"🎙️ {get_processing_stage_message(ProcessingStage.TRANSCRIPTION)} Estimated time: {time_estimate}")
+        elif has_transcript and text_metadata:
+            char_count = text_metadata.get("char_count", 1000)
+            time_estimate = get_processing_time_estimate("text", char_count)
             gr.Info(f"📝 Processing transcript... Estimated time: {time_estimate}")
         
         # =====================================================================
         # Stage 2: Transcription (if audio provided) - FR-3
         # =====================================================================
-        progress(0.1, desc="Processing input...")
+        progress(0.1, desc=get_processing_stage_message(ProcessingStage.TRANSCRIPTION))
         
         full_transcript = ""
         
@@ -1037,7 +1357,7 @@ def process_meeting(
             logger.info("Processing audio input")
             
             def transcription_progress(pct: float, msg: str):
-                progress(0.1 + (pct * 0.3), desc=msg)
+                progress(0.1 + (pct * 0.3), desc=f"🎤 {msg}")
             
             try:
                 full_transcript = transcribe_audio(audio, transcription_progress)
@@ -1067,7 +1387,7 @@ def process_meeting(
         # Truncate if too long (FR-3.4)
         if len(full_transcript) > MAX_TRANSCRIPT_LENGTH:
             logger.warning(f"Transcript truncated from {len(full_transcript)} to {MAX_TRANSCRIPT_LENGTH} chars")
-            gr.Info(f"Long transcript detected. Processing first {MAX_TRANSCRIPT_LENGTH} characters.")
+            gr.Info(f"📄 Long transcript detected. Processing first {MAX_TRANSCRIPT_LENGTH:,} characters.")
             full_transcript = full_transcript[:MAX_TRANSCRIPT_LENGTH]
         
         # Assess transcription quality (FR-9.3)
@@ -1078,10 +1398,10 @@ def process_meeting(
         # =====================================================================
         # Stage 3: Summarization - FR-4
         # =====================================================================
-        progress(0.45, desc="Generating summary...")
+        progress(0.45, desc=get_processing_stage_message(ProcessingStage.SUMMARIZATION))
         
         def summarization_progress(pct: float, msg: str):
-            progress(0.45 + (pct * 0.2), desc=msg)
+            progress(0.45 + (pct * 0.2), desc=f"📝 {msg}")
         
         try:
             summary = generate_summary(full_transcript, summarization_progress)
@@ -1094,10 +1414,10 @@ def process_meeting(
         # =====================================================================
         # Stage 4: Action Item Extraction - FR-5
         # =====================================================================
-        progress(0.7, desc="Extracting action items...")
+        progress(0.7, desc=get_processing_stage_message(ProcessingStage.EXTRACTION))
         
         def extraction_progress(pct: float, msg: str):
-            progress(0.7 + (pct * 0.15), desc=msg)
+            progress(0.7 + (pct * 0.15), desc=f"✅ {msg}")
         
         try:
             action_items = extract_action_items(full_transcript, extraction_progress)
@@ -1109,7 +1429,7 @@ def process_meeting(
         # =====================================================================
         # Stage 5: Output Formatting - FR-7
         # =====================================================================
-        progress(0.9, desc="Formatting minutes...")
+        progress(0.9, desc=get_processing_stage_message(ProcessingStage.FORMATTING))
         
         # Calculate processing time
         processing_time = time.time() - start_time
@@ -1347,6 +1667,40 @@ CUSTOM_CSS = """
     border-radius: 6px;
     font-size: 0.875rem;
     margin-top: 0.5rem;
+}
+
+/* Validation Status */
+.validation-status {
+    background-color: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    color: #166534;
+    padding: 0.75rem;
+    border-radius: 6px;
+    font-size: 0.875rem;
+    margin-top: 0.5rem;
+}
+
+.text-validation {
+    background-color: #eff6ff;
+    border: 1px solid #bfdbfe;
+    color: #1e40af;
+    padding: 0.5rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    margin-top: 0.25rem;
+}
+
+/* Tips Accordion */
+.tips-accordion {
+    margin-top: 1rem;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+}
+
+.tips-accordion h4 {
+    margin: 0 0 0.5rem 0;
+    color: #374151;
+    font-size: 0.95rem;
 }
 
 /* Button Styling */
@@ -1595,9 +1949,16 @@ with gr.Blocks(
                         🔒 Privacy Notice
                     </div>
                     <div class="privacy-notice-content">
-                        Audio is processed in-memory and <strong>not stored</strong>. 
-                        Do not upload confidential or sensitive meetings. 
-                        For enterprise use, consider self-hosting.
+                        <strong>Audio is processed in-memory and NOT stored on our servers.</strong>
+                        <br><br>
+                        ⚠️ <strong>Do NOT upload:</strong>
+                        <ul style="margin: 0.5rem 0; padding-left: 1.25rem;">
+                            <li>Confidential business meetings</li>
+                            <li>Personal or sensitive information</li>
+                            <li>HR, legal, or financial discussions</li>
+                        </ul>
+                        <br>
+                        💼 For enterprise use with sensitive data, consider <strong>self-hosting</strong>.
                     </div>
                 </div>
                 """
@@ -1655,11 +2016,21 @@ with gr.Blocks(
                 show_label=False,
             )
             
+            # Validation Status Display
+            validation_status = gr.Markdown(
+                value="",
+                elem_classes=["validation-status"],
+                visible=False,
+                show_label=False,
+            )
+            
             # Accepted formats hint
             gr.HTML(
                 """
                 <p style="font-size: 0.8rem; color: #6b7280; margin-top: 0.25rem;">
-                    Accepted formats: WAV, MP3, M4A, WebM (max 5 min recommended)
+                    📁 <strong>Accepted formats:</strong> WAV, MP3, M4A, WebM | 
+                    📏 <strong>Max size:</strong> 25MB | 
+                    ⏱️ <strong>Max duration:</strong> 10 min (5 min recommended)
                 </p>
                 """
             )
@@ -1672,11 +2043,19 @@ with gr.Blocks(
                 label="📝 Or Paste Transcript",
                 lines=8,
                 max_lines=50,
-                placeholder="Paste meeting transcript here...\n\nExample:\nTeam discussed Q3 goals. Alex will update the docs by Friday. Sarah agreed to schedule the client demo for next week.",
+                placeholder="Paste meeting transcript here...\n\nExample:\nTeam standup - March 27\nAttendees: Alex, Jordan, Sarah\n\nAlex: I'll complete the UI mockups by Friday.\nJordan: Agreed to update the project timeline by next Monday.\nSarah: Will schedule the client demo for next week.",
                 show_label=True,
                 interactive=True,
                 show_copy_button=True,
                 elem_classes=["transcript-input"],
+            )
+            
+            # Text Validation Status
+            text_validation_status = gr.Markdown(
+                value="",
+                elem_classes=["text-validation"],
+                visible=False,
+                show_label=False,
             )
             
             # Meeting Type Selector
@@ -1705,19 +2084,55 @@ with gr.Blocks(
                 interactive=True,
             )
             
-            # Tips Section
-            with gr.Accordion("💡 Tips for Best Results", open=False):
-                gr.HTML(
-                    """
-                    <ul class="tips-list">
-                        <li>Ensure clear audio with minimal background noise</li>
-                        <li>Speak clearly and at a moderate pace</li>
-                        <li>For long meetings, consider processing in segments</li>
-                        <li>Mention names, deadlines, and commitments explicitly</li>
-                        <li>Processing may take 30-60 seconds on free tier</li>
-                    </ul>
-                    """
-                )
+            # Tips Section - Comprehensive Quality Tips
+            with gr.Accordion("💡 Tips for Better Results", open=False, elem_classes=["tips-accordion"]):
+                with gr.Tabs():
+                    with gr.TabItem("🎤 Audio Tips"):
+                        gr.HTML(
+                            """
+                            <div style="padding: 0.5rem;">
+                            <h4>Recording Quality</h4>
+                            <ul style="margin: 0.5rem 0; padding-left: 1.25rem;">
+                                <li><strong>Quiet environment:</strong> Minimize background noise</li>
+                                <li><strong>Clear speech:</strong> Speak at moderate pace</li>
+                                <li><strong>Good microphone:</strong> Use headset or quality mic</li>
+                                <li><strong>Short segments:</strong> Keep under 5 minutes</li>
+                            </ul>
+                            <p style="font-size: 0.85rem; color: #6b7280; margin-top: 0.5rem;">
+                                📁 <strong>Formats:</strong> WAV, MP3, M4A, WebM | 
+                                📏 <strong>Max:</strong> 25MB, 10 min
+                            </p>
+                            </div>
+                            """
+                        )
+                    with gr.TabItem("📝 Transcript Tips"):
+                        gr.HTML(
+                            """
+                            <div style="padding: 0.5rem;">
+                            <h4>Transcript Structure</h4>
+                            <ul style="margin: 0.5rem 0; padding-left: 1.25rem;">
+                                <li><strong>Include context:</strong> Add speaker names</li>
+                                <li><strong>Clear commitments:</strong> "I will...", "John agreed to..."</li>
+                                <li><strong>Specific dates:</strong> "by Friday", "next Monday"</li>
+                                <li><strong>Minimum length:</strong> At least 50 words</li>
+                            </ul>
+                            </div>
+                            """
+                        )
+                    with gr.TabItem("🎯 Meeting Tips"):
+                        gr.HTML(
+                            """
+                            <div style="padding: 0.5rem;">
+                            <h4>For Better Extraction</h4>
+                            <ul style="margin: 0.5rem 0; padding-left: 1.25rem;">
+                                <li><strong>State names:</strong> "Sarah will handle..."</li>
+                                <li><strong>Confirm deadlines:</strong> "Complete by EOD Friday"</li>
+                                <li><strong>Summarize decisions:</strong> End with recap</li>
+                                <li><strong>Split long meetings:</strong> Process in chunks</li>
+                            </ul>
+                            </div>
+                            """
+                        )
         
         # =====================================================================
         # RIGHT COLUMN - Output Section
@@ -1829,22 +2244,55 @@ with gr.Blocks(
     # Event Handlers
     # =========================================================================
     
-    # Audio upload handler - check duration
+    # Audio upload handler - validate and check duration
     def on_audio_change(audio_path: Optional[str]) -> Tuple[gr.update, gr.update]:
-        """Handle audio file upload and check duration."""
+        """Handle audio file upload with validation."""
         if audio_path:
-            duration_msg = check_audio_duration(audio_path)
-            is_warning = "Warning" in duration_msg
-            return (
-                gr.update(value=duration_msg, visible=True),
-                gr.update(elem_classes=["duration-warning"] if is_warning else []),
-            )
-        return gr.update(value="", visible=False), gr.update()
+            # Use comprehensive validation
+            validation = validate_audio_input(audio_path)
+            
+            if validation.valid:
+                # Show success message
+                message = validation.message
+                if validation.warning:
+                    message += f"\n\n{validation.warning}"
+                return (
+                    gr.update(value=message, visible=True),
+                    gr.update(value="", visible=False),
+                )
+            else:
+                # Show error
+                return (
+                    gr.update(value=f"❌ {validation.message}", visible=True),
+                    gr.update(value="", visible=False),
+                )
+        return gr.update(value="", visible=False), gr.update(value="", visible=False)
     
     audio_input.change(
         fn=on_audio_change,
         inputs=[audio_input],
-        outputs=[duration_status, duration_status],
+        outputs=[duration_status, validation_status],
+    )
+    
+    # Text input handler - validate transcript
+    def on_text_change(text: Optional[str]) -> gr.update:
+        """Handle text input with validation."""
+        if text and text.strip():
+            validation = validate_text_input(text)
+            
+            if validation.valid:
+                message = validation.message
+                if validation.warning:
+                    message += f"\n\n{validation.warning}"
+                return gr.update(value=message, visible=True)
+            else:
+                return gr.update(value=f"❌ {validation.message}", visible=True)
+        return gr.update(value="", visible=False)
+    
+    transcript_input.change(
+        fn=on_text_change,
+        inputs=[transcript_input],
+        outputs=[text_validation_status],
     )
     
     # Generate button click handler
