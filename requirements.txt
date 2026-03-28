@@ -4,13 +4,11 @@
 # Target: Hugging Face Spaces (CPU tier)
 # Python: 3.13 compatible
 # Last Updated: March 2026
+# Note: Gradio is installed by HF Spaces based on sdk_version in README.md
 # =============================================================================
 
 # Python 3.13 audio support (provides audioop module)
 audioop-lts>=0.2.0
-
-# Web Interface Framework (latest for Python 3.13 support)
-gradio>=5.30.0
 
 # Hugging Face Transformers & Models
 transformers>=4.40.0
